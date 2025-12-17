@@ -26,38 +26,25 @@ class AIProcessor:
         self.model_path = "assets/ssd_mobilenet_v2.tflite"
         self.interpreter = None
         
-        # --- REVISI LABEL MAP (CUSTOM) ---
-        # Note: Saya menukar ID 3 dan 4 sesuai request "Terbalik"
+        # --- LABEL MAP STANDAR COCO (91 CLASSES) ---
+        # Ini daftar semua benda yang bisa dilihat robot Anda.
         self.labels = {
-            0: "person", 
-            1: "???", 
-            2: "car", 
-            3: "motorcycle",  # DITUKAR (Sebelumnya Car)
-            4: "bicycle",         # DITUKAR (Sebelumnya Motorcycle)
-            5: "airplane", 6: "bus", 7: "train", 8: "truck", 9: "boat",
+            0: "???", 
+            1: "person", 2: "bicycle", 3: "car", 4: "motorcycle", 5: "airplane", 6: "bus", 7: "train", 8: "truck", 9: "boat",
             10: "traffic light", 11: "fire hydrant", 12: "???", 13: "stop sign", 14: "parking meter", 15: "bench", 
             16: "bird", 17: "cat", 18: "dog", 19: "horse", 20: "sheep", 21: "cow", 22: "elephant", 23: "bear", 24: "zebra", 25: "giraffe", 
             26: "???", 27: "backpack", 28: "umbrella", 29: "???", 30: "???", 31: "handbag", 32: "tie", 33: "suitcase", 
             34: "frisbee", 35: "skis", 36: "snowboard", 37: "sports ball", 38: "kite", 39: "baseball bat", 40: "baseball glove", 
-            41: "skateboard", 42: "surfboard", 43: "bottle", 
-            44: "tennis racket", 
-            45: "???", 46: "cup", 
-            47: "wine glass", 
-            48: "fork", 49: "knife", 50: "spoon", 51: "bowl", 52: "banana", 53: "apple", 54: "sandwich", 55: "orange", 
+            41: "skateboard", 42: "surfboard", 43: "tennis racket", 44: "bottle", 
+            45: "???", 46: "wine glass", 47: "cup", 48: "fork", 49: "knife", 50: "spoon", 51: "bowl", 52: "banana", 53: "apple", 54: "sandwich", 55: "orange", 
             56: "broccoli", 57: "carrot", 58: "hot dog", 59: "pizza", 60: "donut", 61: "cake", 62: "chair", 63: "couch", 
             64: "potted plant", 65: "bed", 66: "???", 67: "dining table", 68: "???", 69: "???", 70: "toilet", 71: "???", 
-            72: "laptop", 73: "tv", 74: "mouse", 75: "remote", 76: "cell phone", 
-            77: "keyboard", 
+            72: "tv", 73: "laptop", 74: "mouse", 75: "remote", 76: "keyboard", 77: "cell phone", 
             78: "microwave", 79: "oven", 80: "toaster", 81: "sink", 82: "refrigerator", 83: "???", 
-            84: "book", 
-            85: "clock", 86: "vase", 87: "scissors", 88: "teddy bear", 89: "hair drier", 90: "toothbrush"
+            84: "book", 85: "clock", 86: "vase", 87: "scissors", 88: "teddy bear", 89: "hair drier", 90: "toothbrush"
         }
 
-        # Filter Target
-        self.TARGET_OBJECTS = [
-            "person", "car", "motorcycle", 
-            "cell phone", "laptop", "book", "bottle", "cup"
-        ]
+        # Kita tidak butuh self.TARGET_OBJECTS lagi karena kita mau SEMUANYA.
 
         # Init TFLite
         self._init_tflite()
@@ -80,7 +67,7 @@ class AIProcessor:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print("[AI] Model Loaded.")
+                print("[AI] Model Loaded (ALL OBJECTS MODE).")
             except Exception as e:
                 print(f"[AI] Error TFLite: {e}")
         else:
@@ -110,7 +97,7 @@ class AIProcessor:
         return frame
 
     # =========================================
-    # 1. OBJECT DETECTION (TUNED)
+    # 1. OBJECT DETECTION (ALL OBJECTS - NO FILTER)
     # =========================================
     def _process_ssd_mobilenet(self, frame):
         if not self.interpreter: return frame
@@ -135,37 +122,39 @@ class AIProcessor:
         for i in range(len(scores)):
             score = scores[i]
             
-            # --- TUNING SENSITIVITAS ---
-            # Turunkan Threshold dari 0.5 ke 0.3
-            # Ini akan membuat objek yang agak gelap/jauh tetap terdeteksi
+            # Threshold 0.5 (50%)
+            # Agar layar tidak penuh sampah, kita pakai 50%.
+            # Kalau mau lebih sensitif, turunkan ke 0.4
             if score > 0.5: 
                 class_id = int(classes[i])
                 label_name = self.labels.get(class_id, "unknown")
                 
-                if label_name in self.TARGET_OBJECTS:
-                    
-                    ymin, xmin, ymax, xmax = boxes[i]
-                    x = int(xmin * w_img)
-                    y = int(ymin * h_img)
-                    w = int((xmax - xmin) * w_img)
-                    h = int((ymax - ymin) * h_img)
+                # --- FILTER DIHAPUS ---
+                # Semua objek yang lolos threshold akan digambar
+                
+                ymin, xmin, ymax, xmax = boxes[i]
+                x = int(xmin * w_img)
+                y = int(ymin * h_img)
+                w = int((xmax - xmin) * w_img)
+                h = int((ymax - ymin) * h_img)
 
-                    x = max(0, x); y = max(0, y)
-                    
-                    # Warna kotak (Hijau)
-                    color = (0, 255, 0) 
-                    
-                    # Gambar
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-                    
-                    # Tampilkan Label & Score
-                    label_text = f"{label_name} {int(score*100)}%"
-                    cv2.putText(frame, label_text, (x, y-10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                x = max(0, x); y = max(0, y)
+                
+                # Warna kotak (Hijau)
+                color = (0, 255, 0) 
+                
+                # Gambar
+                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+                
+                # Tampilkan Label & Score
+                label_text = f"{label_name} {int(score*100)}%"
+                cv2.putText(frame, label_text, (x, y-10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
         return frame
 
-    # ... (FACE, GESTURE, COLOR, QR tetap sama seperti sebelumnya) ...
+    # ... (FACE, GESTURE, COLOR, QR TETAP SAMA) ...
+    # Pastikan method di bawah ini tetap ada:
     
     def _process_face(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

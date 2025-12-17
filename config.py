@@ -6,7 +6,7 @@ PORT = 8000
 
 # --- CAMERA SETTINGS ---
 # Ganti URL ini dengan path file lokal atau '0' untuk kamera fisik nanti
-VIDEO_SOURCE = 0
+VIDEO_SOURCE = -1
 #VIDEO_SOURCE = "assets/colour.mp4"
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
