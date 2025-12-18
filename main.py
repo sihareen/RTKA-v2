@@ -32,7 +32,7 @@ app.add_middleware(
 )
 
 # --- HARDWARE INIT ---
-robot_motor = MotorDriver(simulation=True) 
+robot_motor = MotorDriver(simulation=False) #true untuk mode simulasi tanpa hardware
 robot_cam = VideoStreamer()
 
 @app.get("/")
