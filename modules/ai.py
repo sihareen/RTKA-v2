@@ -17,6 +17,7 @@ except ImportError:
 class AIProcessor:
     def __init__(self):
         self.mode = "off"
+        # Variable tracking tetap di-init, tapi tidak akan pernah diupdate
         self.track_error_x = 0.0
         self.object_found = False
 
@@ -26,31 +27,21 @@ class AIProcessor:
         self.model_path = "assets/ssd_mobilenet_v2.tflite"
         self.interpreter = None
         
-        # --- REVISI LABEL MAP (CUSTOM) ---
-        # Note: Saya menukar ID 3 dan 4 sesuai request "Terbalik"
+        # --- LABEL MAP ---
         self.labels = {
-            0: "person", 
-            1: "???", 
-            2: "car", 
-            3: "motorcycle",  # DITUKAR (Sebelumnya Car)
-            4: "bicycle",         # DITUKAR (Sebelumnya Motorcycle)
+            0: "person", 1: "???", 2: "car", 3: "motorcycle", 4: "bicycle",
             5: "airplane", 6: "bus", 7: "train", 8: "truck", 9: "boat",
             10: "traffic light", 11: "fire hydrant", 12: "???", 13: "stop sign", 14: "parking meter", 15: "bench", 
             16: "bird", 17: "cat", 18: "dog", 19: "horse", 20: "sheep", 21: "cow", 22: "elephant", 23: "bear", 24: "zebra", 25: "giraffe", 
             26: "???", 27: "backpack", 28: "umbrella", 29: "???", 30: "???", 31: "handbag", 32: "tie", 33: "suitcase", 
             34: "frisbee", 35: "skis", 36: "snowboard", 37: "sports ball", 38: "kite", 39: "baseball bat", 40: "baseball glove", 
-            41: "skateboard", 42: "surfboard", 43: "bottle", 
-            44: "tennis racket", 
-            45: "???", 46: "cup", 
-            47: "wine glass", 
+            41: "skateboard", 42: "surfboard", 43: "bottle", 44: "tennis racket", 45: "???", 46: "cup", 47: "wine glass", 
             48: "fork", 49: "knife", 50: "spoon", 51: "bowl", 52: "banana", 53: "apple", 54: "sandwich", 55: "orange", 
             56: "broccoli", 57: "carrot", 58: "hot dog", 59: "pizza", 60: "donut", 61: "cake", 62: "chair", 63: "couch", 
             64: "potted plant", 65: "bed", 66: "???", 67: "dining table", 68: "???", 69: "???", 70: "toilet", 71: "???", 
-            72: "laptop", 73: "tv", 74: "mouse", 75: "remote", 76: "cell phone", 
-            77: "keyboard", 
+            72: "laptop", 73: "tv", 74: "mouse", 75: "remote", 76: "cell phone", 77: "keyboard", 
             78: "microwave", 79: "oven", 80: "toaster", 81: "sink", 82: "refrigerator", 83: "???", 
-            84: "book", 
-            85: "clock", 86: "vase", 87: "scissors", 88: "teddy bear", 89: "hair drier", 90: "toothbrush"
+            84: "book", 85: "clock", 86: "vase", 87: "scissors", 88: "teddy bear", 89: "hair drier", 90: "toothbrush"
         }
 
         # Filter Target
@@ -80,7 +71,7 @@ class AIProcessor:
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print("[AI] Model Loaded.")
+                print("[AI] Model Loaded (Detection Only).")
             except Exception as e:
                 print(f"[AI] Error TFLite: {e}")
         else:
@@ -91,8 +82,9 @@ class AIProcessor:
         print(f"[AI] Mode: {self.mode}")
 
     def process_frame(self, frame):
+        # RESET TRACKING VARIABLES TIAP FRAME
         self.track_error_x = 0.0
-        self.object_found = False
+        self.object_found = False # Selalu False agar motor tidak jalan otomatis
 
         if self.mode == "off": return frame
         
@@ -110,63 +102,50 @@ class AIProcessor:
         return frame
 
     # =========================================
-    # 1. OBJECT DETECTION (TUNED)
+    # 1. OBJECT DETECTION (VISUAL ONLY)
     # =========================================
     def _process_ssd_mobilenet(self, frame):
         if not self.interpreter: return frame
 
         h_img, w_img, _ = frame.shape
         
-        # Resize ke 300x300
         input_size = 300 
         frame_resized = cv2.resize(frame, (input_size, input_size))
         frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
         input_data = np.expand_dims(frame_rgb, axis=0)
 
-        # Inference
         self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
         self.interpreter.invoke()
 
-        # Output
         boxes = self.interpreter.get_tensor(self.output_details[0]['index'])[0] 
         classes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
         scores = self.interpreter.get_tensor(self.output_details[2]['index'])[0]
 
         for i in range(len(scores)):
             score = scores[i]
-            
-            # --- TUNING SENSITIVITAS ---
-            # Turunkan Threshold dari 0.5 ke 0.3
-            # Ini akan membuat objek yang agak gelap/jauh tetap terdeteksi
             if score > 0.5: 
                 class_id = int(classes[i])
                 label_name = self.labels.get(class_id, "unknown")
                 
                 if label_name in self.TARGET_OBJECTS:
-                    
                     ymin, xmin, ymax, xmax = boxes[i]
                     x = int(xmin * w_img)
                     y = int(ymin * h_img)
                     w = int((xmax - xmin) * w_img)
                     h = int((ymax - ymin) * h_img)
-
                     x = max(0, x); y = max(0, y)
                     
-                    # Warna kotak (Hijau)
+                    # HANYA MENGGAMBAR (Tidak ada hitungan tracking)
                     color = (0, 255, 0) 
-                    
-                    # Gambar
                     cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-                    
-                    # Tampilkan Label & Score
                     label_text = f"{label_name} {int(score*100)}%"
                     cv2.putText(frame, label_text, (x, y-10), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
         return frame
 
-    # ... (FACE, GESTURE, COLOR, QR tetap sama seperti sebelumnya) ...
-    
+    # =========================================
+    # 2. FACE DETECTION (VISUAL ONLY)
+    # =========================================
     def _process_face(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.face_detector.process(rgb)
@@ -178,13 +157,20 @@ class AIProcessor:
                 y = int(bboxC.ymin * h)
                 width = int(bboxC.width * w)
                 height = int(bboxC.height * h)
+                
+                # Visualisasi Saja
                 cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 255, 255), 2)
                 cv2.putText(frame, "Face", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                cx = x + (width // 2)
-                self.track_error_x = (cx - (w / 2)) / (w / 2)
-                self.object_found = True
+                
+                # TRACKING LOGIC DIHAPUS
+                # cx = x + (width // 2)
+                # self.track_error_x = (cx - (w / 2)) / (w / 2)
+                # self.object_found = True <-- Dihapus
         return frame
 
+    # =========================================
+    # 3. GESTURE (VISUAL ONLY)
+    # =========================================
     def _process_gesture(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = self.hands.process(rgb)
@@ -199,13 +185,19 @@ class AIProcessor:
                     fingers.append(1 if hand_landmarks.landmark[4].x > hand_landmarks.landmark[3].x else 0)
                 for id in [8, 12, 16, 20]:
                     fingers.append(1 if hand_landmarks.landmark[id].y < hand_landmarks.landmark[id - 2].y else 0)
+                
                 total = fingers.count(1)
                 cv2.putText(frame, f"{hand_label}: {total}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
                 if total == 5: 
                     cv2.putText(frame, "STOP", (200, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,255), 4)
-                    self.track_error_x = 0
+                    # TRACKING STOP DIHAPUS
+                    # self.track_error_x = 0 
         return frame
 
+    # =========================================
+    # 4. COLOR DETECTION (VISUAL ONLY)
+    # =========================================
     def _process_color(self, frame):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         color_definitions = [
@@ -215,7 +207,7 @@ class AIProcessor:
             {"label": "Yellow", "lower": np.array([20, 100, 100]), "upper": np.array([35, 255, 255]), "bgr": (0, 255, 255)}
         ]
         kernel = np.ones((5,5), "uint8")
-        max_area = 0
+        # max_area = 0 <-- Tidak dipakai
         for color in color_definitions:
             mask = cv2.inRange(hsv, color["lower"], color["upper"])
             mask = cv2.dilate(mask, kernel)
@@ -226,14 +218,19 @@ class AIProcessor:
                     x, y, w, h = cv2.boundingRect(contour)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), color["bgr"], 2)
                     cv2.putText(frame, color["label"], (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color["bgr"], 2)
-                    if area > max_area:
-                        max_area = area
-                        h_img, w_img, _ = frame.shape
-                        cx = x + (w // 2)
-                        self.track_error_x = (cx - (w_img / 2)) / (w_img / 2)
-                        self.object_found = True
+                    
+                    # LOGIKA TRACKING DIHAPUS
+                    # if area > max_area:
+                    #     max_area = area
+                    #     h_img, w_img, _ = frame.shape
+                    #     cx = x + (w // 2)
+                    #     self.track_error_x = (cx - (w_img / 2)) / (w_img / 2)
+                    #     self.object_found = True
         return frame
 
+    # =========================================
+    # 5. QR RECOGNITION (VISUAL ONLY)
+    # =========================================
     def _process_qr(self, frame):
         decoded = decode(frame)
         for obj in decoded:
