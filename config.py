@@ -24,4 +24,8 @@ PIN_FR_FWD = 24
 PIN_FR_BWD = 25
 PIN_RR_FWD = 5
 PIN_RR_BWD = 6
-#asikk
+
+# --- EXTRAS (SERVO & BUZZER) ---
+PIN_SERVO_PAN = 12   # Servo Geleng (Kiri-Kanan)
+PIN_SERVO_TILT = 13  # Servo Angguk (Atas-Bawah)
+PIN_BUZZER = 16      # Buzzer Aktif
