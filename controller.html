@@ -3,303 +3,312 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Raspbot FPV Controller</title>
+    <title>RTKAv2 Command Center</title>
     <style>
-        body {
-            font-family: 'Consolas', monospace;
-            background-color: #121212;
-            color: #0f0;
-            text-align: center;
-            margin: 0;
-            padding: 0;
-            overflow: hidden; /* Mencegah scroll */
-            touch-action: none;
-        }
+        /* --- STYLE DASAR (SAMA) --- */
+        :root { --primary: #00ff00; --danger: #ff3333; --dark: #121212; --panel: #1e1e1e; --glass: rgba(0, 0, 0, 0.7); --btn-bg: #333; }
+        body { font-family: 'Segoe UI', Consolas, sans-serif; background-color: var(--dark); color: white; margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; touch-action: none; user-select: none; }
+        header { background: #000; padding: 5px 10px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; height: 40px; }
+        .conn-box { display: flex; gap: 5px; }
+        input.ip-input { background: #222; border: 1px solid #444; color: var(--primary); width: 110px; text-align: center; border-radius: 4px; font-family: monospace; }
+        button.btn { background: #333; color: white; border: 1px solid #555; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+        button.btn-connect { background: #004400; }
+        
+        #viewport { flex: 1; position: relative; background: #000; display: flex; justify-content: center; align-items: center; overflow: hidden; }
+        #cam-feed { width: 100%; height: 100%; object-fit: contain; display: none; }
+        .hud { position: absolute; pointer-events: none; padding: 5px; background: var(--glass); border-radius: 4px; font-size: 0.8rem; }
+        .hud-tl { top: 10px; left: 10px; color: var(--primary); }
+        .hud-tr { top: 10px; right: 10px; text-align: right; }
+        
+        #controls { height: 220px; background: var(--panel); display: grid; grid-template-columns: 1fr 1.5fr 1fr; padding: 10px; gap: 10px; }
+        .col-joy, .col-center, .col-action { display: flex; justify-content: center; align-items: center; }
+        .col-center { flex-direction: column; gap: 10px; }
+        .panel-box { background: #2a2a2a; padding: 8px; border-radius: 8px; border: 1px solid #444; width: 95%; box-sizing: border-box; }
+        select { width: 100%; background: #333; color: white; padding: 8px; border: none; border-radius: 4px; margin-bottom: 5px; }
+        
+        .ai-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; width: 100%; }
+        .btn-ai { background: #444; color: #ccc; border: 1px solid #555; padding: 10px; border-radius: 4px; cursor: pointer; font-size: 0.75rem; text-align: center; }
+        .btn-ai.active { background: var(--primary); color: black; font-weight: bold; border-color: #fff; box-shadow: 0 0 5px var(--primary); }
 
-        /* --- LAYOUT UTAMA --- */
-        #app-container {
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-        }
+        /* --- CSS BARU: TOGGLE SWITCH --- */
+        .switch-container { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 10px; }
+        .switch { position: relative; display: inline-block; width: 60px; height: 34px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
+        .slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--primary); }
+        input:checked + .slider:before { transform: translateX(26px); }
+        .switch-label { font-weight: bold; color: #aaa; font-size: 0.9rem; }
+        input:checked ~ .switch-label { color: var(--primary); text-shadow: 0 0 5px var(--primary); }
 
-        /* --- VIDEO AREA (ATAS) --- */
-        #video-container {
-            flex: 1; /* Mengisi sisa ruang */
-            background: #000;
-            position: relative;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            border-bottom: 2px solid #333;
-            overflow: hidden;
-        }
-
-        #cam-feed {
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
-            display: none; /* Sembunyi sebelum connect */
-        }
-
-        #placeholder-text {
-            color: #555;
-            font-size: 1.2rem;
-        }
-
-        /* Overlay HUD di atas Video */
-        .hud {
-            position: absolute;
-            background: rgba(0, 0, 0, 0.5);
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 0.9rem;
-            color: white;
-            pointer-events: none;
-        }
-        .hud-tl { top: 10px; left: 10px; } /* Top-Left */
-        .hud-tr { top: 10px; right: 10px; } /* Top-Right */
-
-        /* --- CONTROL AREA (BAWAH) --- */
-        #controls-container {
-            height: 320px; /* Tinggi area kontrol */
-            background: #1a1a1a;
-            padding: 10px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            box-shadow: 0 -5px 15px rgba(0,255,0,0.1);
-        }
-
-        /* Input Baris Atas */
-        .top-bar {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 10px;
-            width: 100%;
-            justify-content: center;
-        }
-        input, select, button {
-            background: #333;
-            color: white;
-            border: 1px solid #555;
-            padding: 8px;
-            border-radius: 4px;
-            font-family: inherit;
-        }
-        button { background: #005500; cursor: pointer; }
-        button:active { background: #0f0; color: black; }
-
-        /* Joystick Area */
-        #zone {
-            width: 180px;
-            height: 180px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 2px dashed #0f0;
-            border-radius: 50%;
-            position: relative;
-            touch-action: none;
-        }
-        #knob {
-            width: 60px;
-            height: 60px;
-            background: rgba(0, 255, 0, 0.8);
-            border-radius: 50%;
-            position: absolute;
-            top: 50%; left: 50%;
-            transform: translate(-50%, -50%);
-            box-shadow: 0 0 15px #0f0;
-        }
-
-        /* Speed Slider */
-        .slider-box { width: 90%; margin-top: 10px; display: flex; align-items: center; gap: 10px; }
-        input[type=range] { flex: 1; }
-
+        /* Joystick & Horn */
+        #zone { width: 160px; height: 160px; background: rgba(255, 255, 255, 0.05); border: 2px dashed #444; border-radius: 50%; position: relative; }
+        #knob { width: 60px; height: 60px; background: rgba(0, 255, 0, 0.2); border: 2px solid var(--primary); border-radius: 50%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
     </style>
 </head>
 <body>
 
-<div id="app-container">
-    
-    <div id="video-container">
-        <div id="placeholder-text">NO SIGNAL - CONNECT TO START</div>
-        <img id="cam-feed" alt="Video Stream">
-        
-        <div class="hud hud-tl">BAT: 12.4V</div>
-        <div class="hud hud-tr" id="status-text">DISCONNECTED</div>
+<header>
+    <div style="font-weight:bold; color:var(--primary)">RASPBOT <span style="font-size:0.7em; color:#888">RTKAv2</span></div>
+    <div class="conn-box">
+        <input type="text" id="ip" class="ip-input" value="192.168.1.101">
+        <button id="btn-conn" class="btn btn-connect" onclick="toggleMainConnect()">CONNECT</button>
+    </div>
+</header>
+
+<div id="viewport">
+    <div id="placeholder-text" style="color:#666">SELECT MODE & CONNECT</div>
+    <img id="cam-feed" alt="Stream">
+    <div class="hud hud-tl">
+        <div>MODE: <span id="mode-display" style="color:#fff">READY</span></div>
+        <div id="ai-status" style="font-size:0.8em; color:yellow; display:none">STANDBY</div>
+    </div>
+    <div class="hud hud-tr" id="status-text" style="color:red">DISCONNECTED</div>
+</div>
+
+<div id="controls">
+    <div class="col-joy">
+        <div id="zone"><div id="knob"></div></div>
     </div>
 
-    <div id="controls-container">
-        
-        <div class="top-bar">
-            <input type="text" id="ip" value="192.168.50.1" style="width: 120px; text-align: center;">
-            <button onclick="toggleConnect()" id="btn-conn">CONNECT</button>
-            <select id="aiMode" onchange="setAI()">
-                <option value="off">AI: OFF</option>
-                <option value="object_detection">YOLO Object</option>
-                <option value="face_detection">Face Track</option>
-                <option value="color_detection">Color Classify</option>
-                <option value="qr_recognition">QR Reader</option>
-                <option value="gesture_recognition">Gesture</option>
+    <div class="col-center">
+        <div class="panel-box">
+            <select id="opMode" onchange="changeMode()">
+                <option value="/ws/control">Remote Control</option>
+                <option value="/ws/avoid">Avoid & Follow</option>
+                <option value="/ws/tracking">Target Tracking</option>
+                <option value="/ws/recognitionControl">Recognition Control</option>
+                <option value="/ws/objectDetection">Object Detection</option>
+                <option value="/ws/qr">QR Scanner</option>
+                <option value="/ws/autoPilot">Auto Pilot</option>
             </select>
         </div>
 
-        <div id="zone">
-            <div id="knob"></div>
+        <div class="panel-box" id="feature-box" style="display:none">
+            <label id="feature-label" style="font-size:0.7rem; color:#aaa; margin-bottom:5px; display:block">SELECT FEATURE</label>
+            
+            <div id="panel-avoid" class="ai-grid" style="display:none">
+                <button class="btn-ai" onclick="triggerAI('avoid_hcsr', this)">OBSTACLE (HCSR)</button>
+                <button class="btn-ai" onclick="triggerAI('avoid_hybrid', this)">LINE + AVOID</button>
+            </div>
+            <div id="panel-tracking" class="ai-grid" style="display:none">
+                <button class="btn-ai" onclick="triggerAI('face_track', this)">FACE TRACK</button>
+                <button class="btn-ai" onclick="triggerAI('color_track', this)">COLOR TRACK</button>
+            </div>
+            <div id="panel-recog" class="ai-grid" style="display:none">
+                <button class="btn-ai" onclick="triggerAI('color_follow', this)">COLOR FOLLOW</button>
+                <button class="btn-ai" onclick="triggerAI('gesture_cmd', this)">GESTURE CMD</button>
+            </div>
+            <div id="panel-detect" class="ai-grid" style="display:none">
+                <button class="btn-ai" onclick="triggerAI('object_detection', this)">OBJECT</button>
+                <button class="btn-ai" onclick="triggerAI('face_detection', this)">FACE</button>
+                <button class="btn-ai" onclick="triggerAI('color_detection', this)">COLOR</button>
+                <button class="btn-ai" onclick="triggerAI('gesture_recognition', this)">GESTURE</button>
+            </div>
+
+             <div id="panel-single" style="display:none; width:100%;">
+                <div class="switch-container">
+                    <label class="switch">
+                        <input type="checkbox" id="system-switch" onchange="toggleSystem(this)">
+                        <span class="slider round"></span>
+                    </label>
+                    <div id="switch-txt" class="switch-label">SYSTEM OFF</div>
+                </div>
+            </div>
         </div>
 
-        <div class="slider-box">
-            <span>SPD:</span>
-            <input type="range" id="speed" min="0" max="100" value="100" oninput="updateSpeed(this.value)">
-            <span id="spVal" style="width: 30px">100</span>%
+        <div class="panel-box" id="speed-box">
+            <input type="range" id="speed" min="0" max="100" value="100">
         </div>
+    </div>
+
+    <div class="col-action">
+        <button style="width:80px; height:80px; background:red; border-radius:50%; font-weight:bold; border:4px solid #500;" 
+            onmousedown="sendJson({cmd:'buzzer', state:'on'})" 
+            onmouseup="sendJson({cmd:'buzzer', state:'off'})">HORN</button>
     </div>
 </div>
 
 <script>
-    let ws;
+    let ws = null;
     let isConnected = false;
     let dragging = false;
-    const zone = document.getElementById('zone');
-    const knob = document.getElementById('knob');
-    const camFeed = document.getElementById('cam-feed');
-    const placeholder = document.getElementById('placeholder-text');
+    
+    // UI Elements
+    const ipInput = document.getElementById('ip');
     const statusText = document.getElementById('status-text');
     const btnConn = document.getElementById('btn-conn');
+    const camFeed = document.getElementById('cam-feed');
+    const modeDisplay = document.getElementById('mode-display');
+    const aiStatus = document.getElementById('ai-status');
+    const opMode = document.getElementById('opMode');
+    
+    const featureBox = document.getElementById('feature-box');
+    const speedBox = document.getElementById('speed-box');
+    const sysSwitch = document.getElementById('system-switch'); // Checkbox Element
 
-    function toggleConnect() {
-        if (!isConnected) {
-            connect();
+    function toggleMainConnect() {
+        if (!isConnected) connectWebSocket();
+        else disconnectWebSocket();
+    }
+
+    function changeMode() {
+        if (isConnected) {
+            disconnectWebSocket();
+            setTimeout(connectWebSocket, 500);
+        }
+        updateUI(opMode.value);
+    }
+
+    function updateUI(path) {
+        // Reset UI
+        featureBox.style.display = "none";
+        speedBox.style.display = "none";
+        document.querySelectorAll('.ai-grid').forEach(el => el.style.display = 'none');
+        document.getElementById('panel-single').style.display = 'none';
+        
+        // Reset Switch ke posisi OFF
+        sysSwitch.checked = false;
+        document.getElementById('switch-txt').innerText = "SYSTEM OFF";
+
+        if (path === "/ws/control") {
+            speedBox.style.display = "block";
         } else {
-            disconnect();
+            featureBox.style.display = "block";
+            
+            if (path === "/ws/avoid") document.getElementById('panel-avoid').style.display = "grid";
+            else if (path === "/ws/tracking") document.getElementById('panel-tracking').style.display = "grid";
+            else if (path === "/ws/recognitionControl") document.getElementById('panel-recog').style.display = "grid";
+            else if (path === "/ws/objectDetection") document.getElementById('panel-detect').style.display = "grid";
+            
+            // Tampilkan Switch untuk Auto Pilot & QR
+            else if (path === "/ws/autoPilot" || path === "/ws/qr") {
+                document.getElementById('panel-single').style.display = "block";
+            }
         }
     }
 
-    function connect() {
-        let ip = document.getElementById('ip').value;
-        
-        // 1. Connect WebSocket Control
-        ws = new WebSocket("ws://" + ip + ":8000/ws/control");
-        
-        ws.onopen = () => { 
+    function connectWebSocket() {
+        const ip = ipInput.value;
+        const path = opMode.value;
+        const url = `ws://${ip}:8000${path}`;
+
+        statusText.innerText = "CONNECTING...";
+        ws = new WebSocket(url);
+
+        ws.onopen = () => {
             isConnected = true;
             statusText.innerText = "ONLINE";
             statusText.style.color = "#0f0";
             btnConn.innerText = "DISCONNECT";
-            btnConn.style.backgroundColor = "#550000";
+            btnConn.style.background = "#550000";
+            modeDisplay.innerText = opMode.options[opMode.selectedIndex].text.toUpperCase();
             
-            // 2. Load Video Stream
-            // Trik: Tambahkan timestamp agar browser tidak cache gambar lama
-            camFeed.src = "http://" + ip + ":8000/video_feed?" + new Date().getTime();
+            updateUI(path); 
+
+            camFeed.src = `http://${ip}:8000/video_feed?t=${new Date().getTime()}`;
             camFeed.style.display = "block";
-            placeholder.style.display = "none";
+            document.getElementById('placeholder-text').style.display = "none";
         };
 
-        ws.onclose = () => { 
-            disconnect();
+        ws.onmessage = (evt) => {
+            try {
+                const data = JSON.parse(evt.data);
+                if (data.status === "active") {
+                    aiStatus.innerText = "RUNNING: " + data.mode.toUpperCase();
+                    aiStatus.style.display = "block";
+                } else if (data.status === "stopped") {
+                    aiStatus.style.display = "none";
+                }
+            } catch(e){}
         };
 
-        ws.onerror = () => {
-            statusText.innerText = "ERROR";
-            statusText.style.color = "red";
-        };
+        ws.onclose = disconnectWebSocket;
+        ws.onerror = disconnectWebSocket;
     }
 
-    function disconnect() {
+    function disconnectWebSocket() {
         isConnected = false;
         if(ws) ws.close();
-        
+        ws = null;
         statusText.innerText = "DISCONNECTED";
-        statusText.style.color = "white";
+        statusText.style.color = "red";
         btnConn.innerText = "CONNECT";
-        btnConn.style.backgroundColor = "#005500";
-        
-        // Stop Video
+        btnConn.style.background = "#004400";
         camFeed.src = "";
         camFeed.style.display = "none";
-        placeholder.style.display = "block";
+        document.getElementById('placeholder-text').style.display = "block";
+        aiStatus.style.display = "none";
+        updateUI("/ws/control");
     }
 
-    function setAI() {
-        if(ws && isConnected) {
-            ws.send(JSON.stringify({
-                cmd: "ai_mode", 
-                mode: document.getElementById('aiMode').value
-            }));
+    // --- FUNGSI TOGGLE SWITCH (DIGITAL) ---
+    function toggleSystem(checkbox) {
+        if (!isConnected) {
+            checkbox.checked = false; // Kembalikan ke off jika belum konek
+            return alert("Connect first!");
+        }
+
+        const label = document.getElementById('switch-txt');
+        
+        if (checkbox.checked) {
+            // Switch digeser ke ON -> Kirim START
+            label.innerText = "SYSTEM ON";
+            label.style.color = "var(--primary)";
+            sendJson({ cmd: "set_ai_mode", mode: "start" });
+        } else {
+            // Switch digeser ke OFF -> Kirim STOP
+            label.innerText = "SYSTEM OFF";
+            label.style.color = "#aaa";
+            sendJson({ cmd: "set_ai_mode", mode: "stop" }); // Kirim perintah Stop
         }
     }
 
-    function updateSpeed(val) {
-        document.getElementById('spVal').innerText = val;
+    // --- FUNGSI TOMBOL BIASA (Face, Object, dll) ---
+    function triggerAI(modeName, btnElement) {
+        if (!isConnected) return alert("Connect first!");
+        sendJson({ cmd: "set_ai_mode", mode: modeName });
+        const parent = btnElement.parentElement;
+        parent.querySelectorAll('.btn-ai').forEach(b => b.classList.remove('active'));
+        btnElement.classList.add('active');
     }
 
-    // --- JOYSTICK LOGIC ---
+    function sendJson(data) {
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(data));
+    }
+
+    // --- JOYSTICK ---
+    const zone = document.getElementById('zone');
+    const knob = document.getElementById('knob');
     function handleMove(clientX, clientY) {
         if (!dragging) return;
-        
         const rect = zone.getBoundingClientRect();
         const radius = rect.width / 2;
-        
-        // Hitung posisi relatif mouse terhadap tengah lingkaran
         let x = clientX - (rect.left + radius);
         let y = clientY - (rect.top + radius);
-        
-        // Hitung jarak dari tengah
         const dist = Math.sqrt(x*x + y*y);
-        const maxDist = radius - 30; // Batas gerak knob
-        
-        // Clamp jika keluar lingkaran
-        if (dist > maxDist) {
-            x = (x / dist) * maxDist;
-            y = (y / dist) * maxDist;
-        }
-        
-        // Gerakkan visual knob
+        const maxDist = radius - 30;
+        if (dist > maxDist) { x = (x / dist) * maxDist; y = (y / dist) * maxDist; }
         knob.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
         
-        // Kirim Data (Normalisasi -1.0 s/d 1.0)
-        // Y di browser ke bawah positif, di robot ke atas positif -> Invert Y (-y)
-        const payload = {
-            cmd: "move", 
-            x: parseFloat((x / maxDist).toFixed(2)), 
-            y: parseFloat((-y / maxDist).toFixed(2)),
-            speed: parseInt(document.getElementById('speed').value)
-        };
-        
-        if(ws && ws.readyState === 1) {
-            ws.send(JSON.stringify(payload));
+        if (opMode.value === "/ws/control") {
+            const normX = parseFloat((x / maxDist).toFixed(2));
+            const normY = parseFloat((-y / maxDist).toFixed(2));
+            const spd = parseInt(document.getElementById('speed').value);
+            sendJson({ cmd: "move", x: normX, y: normY, speed: spd });
         }
     }
-
     function endMove() {
         dragging = false;
-        // Reset knob ke tengah
         knob.style.transform = `translate(-50%, -50%)`;
-        
-        if(ws && isConnected) {
-            ws.send(JSON.stringify({cmd: "stop"}));
-        }
+        if (opMode.value === "/ws/control") sendJson({ cmd: "stop" });
     }
-
-    // Mouse Events
     knob.addEventListener('mousedown', () => dragging = true);
     window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
     window.addEventListener('mouseup', endMove);
-    
-    // Touch Events (Mobile)
-    knob.addEventListener('touchstart', (e) => {
-        dragging = true;
-        e.preventDefault(); // Mencegah scroll saat drag
-    });
-    window.addEventListener('touchmove', e => {
-        if(dragging) {
-            e.preventDefault();
-            handleMove(e.touches[0].clientX, e.touches[0].clientY);
-        }
-    }, {passive: false});
+    knob.addEventListener('touchstart', (e) => { dragging = true; e.preventDefault(); });
+    window.addEventListener('touchmove', (e) => { if(dragging) { e.preventDefault(); handleMove(e.touches[0].clientX, e.touches[0].clientY); } }, {passive: false});
     window.addEventListener('touchend', endMove);
-
 </script>
-
 </body>
 </html>
