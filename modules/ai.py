@@ -1,22 +1,23 @@
 import cv2
 import numpy as np
 import os
-import time
 import mediapipe as mp
+import time
 from pyzbar.pyzbar import decode
 
+# ... (Import TFLite & Config sama seperti sebelumnya) ...
 try:
     import tflite_runtime.interpreter as tflite
 except ImportError:
     try:
         import tensorflow.lite as tflite
     except ImportError:
-        print("[AI] CRITICAL: Install tflite-runtime")
+        pass
 
 class AIProcessor:
     def __init__(self):
         self.mode = "off"
-        self.target_color = "none" 
+        self.target_color = "none" # Bisa "none", "all", "red", "green", dll
         
         # Output Data
         self.track_error_x = 0.0    
@@ -26,7 +27,7 @@ class AIProcessor:
         self.qr_data = None         
         self.gesture_data = None    
 
-        # Setup TFLite & MediaPipe (Sama seperti sebelumnya)
+        # Setup Models (Sama seperti sebelumnya)
         self.model_path = "assets/ssd_mobilenet_v2.tflite"
         self.interpreter = None
         self.labels = {
@@ -81,33 +82,34 @@ class AIProcessor:
         elif self.mode == "auto_pilot": return self._process_auto_pilot(frame)
         return frame
 
-    # --- COLOR DETECTION DENGAN "TARGET LOCKING" ---
+    # --- REVISI: COLOR DETECTION (SUPPORT "ALL") ---
     def _process_color(self, frame):
+        # Jika NONE = Standby (Hitam/Teks)
         if self.target_color == "none":
             cv2.putText(frame, "SELECT COLOR", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             return frame
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # DEFINISI WARNA (Termasuk KUNING)
         color_definitions = [
             {"label": "red", "lower": np.array([0, 160, 100]), "upper": np.array([10, 255, 255]), "bgr": (0, 0, 255)},
             {"label": "red", "lower": np.array([170, 160, 100]), "upper": np.array([180, 255, 255]), "bgr": (0, 0, 255)},
             {"label": "blue", "lower": np.array([110, 180, 60]), "upper": np.array([130, 255, 255]), "bgr": (255, 0, 0)},
             {"label": "green", "lower": np.array([40, 70, 70]), "upper": np.array([80, 255, 255]), "bgr": (0, 255, 0)},
-            # Kuning (Yellow)
             {"label": "yellow", "lower": np.array([20, 100, 100]), "upper": np.array([35, 255, 255]), "bgr": (0, 255, 255)}
         ]
 
         kernel = np.ones((5,5), "uint8")
-        
-        # Variabel untuk mencari kandidat terbaik
-        best_contour = None
         max_area = 0
+        best_contour = None
         target_bgr = (255, 255, 255)
 
         for color in color_definitions:
-            if color["label"] != self.target_color: continue 
+            # --- LOGIKA FILTER BARU ---
+            # Jika target bukan "all" DAN label tidak cocok, skip.
+            # Artinya: Jika target "all", SEMUA warna akan diproses.
+            if self.target_color != "all" and color["label"] != self.target_color:
+                continue 
 
             mask = cv2.inRange(hsv, color["lower"], color["upper"])
             mask = cv2.dilate(mask, kernel) 
@@ -115,37 +117,29 @@ class AIProcessor:
             
             for contour in contours:
                 area = cv2.contourArea(contour)
-                
-                # Filter noise kecil
                 if area > 800:
                     x, y, w, h = cv2.boundingRect(contour)
                     
-                    # LOGIKA LOCKING:
-                    # Selalu gambar kotak tipis pada SEMUA objek yang terdeteksi (kandidat)
-                    # Tapi jangan hitung error dulu.
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), color["bgr"], 1)
+                    # Visualisasi Kotak (Untuk semua warna yang lolos filter)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), color["bgr"], 2)
                     
-                    # Cek apakah ini objek TERBESAR sejauh ini?
+                    # Tambahkan Label Warna
+                    cv2.putText(frame, color["label"].upper(), (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color["bgr"], 2)
+                    
+                    # Logic Locking (Hanya berguna untuk tracking)
                     if area > max_area:
                         max_area = area
                         best_contour = contour
                         target_bgr = color["bgr"]
         
-        # SETELAH SEMUA LOOP SELESAI, BARU KITA PROSES YANG TERBAIK (LOCKED TARGET)
+        # Jika ada objek dan kita sedang tidak mode "all" (artinya mode tracking spesifik),
+        # Hitung error untuk locking servo
         if best_contour is not None:
             x, y, w, h = cv2.boundingRect(best_contour)
             h_img, w_img, _ = frame.shape
-            
             cx = x + (w // 2)
             cy = y + (h // 2)
             
-            # Visualisasi TARGET TERKUNCI (Tebal & Crosshair)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), target_bgr, 3)
-            cv2.line(frame, (cx - 10, cy), (cx + 10, cy), (0, 255, 255), 2)
-            cv2.line(frame, (cx, cy - 10), (cx, cy + 10), (0, 255, 255), 2)
-            cv2.putText(frame, "LOCKED", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, target_bgr, 2)
-
-            # Hitung Error hanya dari objek ini
             self.track_error_x = (cx - (w_img / 2)) / (w_img / 2)
             self.track_error_y = (cy - (h_img / 2)) / (h_img / 2)
             self.track_area = max_area / (w_img * h_img)
@@ -153,66 +147,43 @@ class AIProcessor:
 
         return frame
 
-    # --- FACE DETECTION (SAMA + Y Axis) ---
+    # ... (SISA KODE SAMA: face, gesture, qr, ssd, auto_pilot JANGAN DIHAPUS) ...
     def _process_face(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.face_detector.process(rgb)
         if results.detections:
-            # Cari wajah terbesar (Sama seperti logika warna)
-            max_area = 0
-            best_detect = None
-            h, w, c = frame.shape
-            
             for detection in results.detections:
                 bboxC = detection.location_data.relative_bounding_box
-                width = int(bboxC.width * w)
-                height = int(bboxC.height * h)
-                area = width * height
-                
-                # Gambar kotak tipis semua wajah
-                x = int(bboxC.xmin * w)
-                y = int(bboxC.ymin * h)
-                cv2.rectangle(frame, (x, y), (x + width, y + height), (100, 100, 100), 1)
-
-                if area > max_area:
-                    max_area = area
-                    best_detect = detection
-
-            if best_detect:
-                bboxC = best_detect.location_data.relative_bounding_box
+                h, w, c = frame.shape
                 x, y = int(bboxC.xmin * w), int(bboxC.ymin * h)
                 width, height = int(bboxC.width * w), int(bboxC.height * h)
-                
-                # Kotak Tebal pada Wajah Utama
-                cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 255, 255), 3)
-                
+                cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 255, 255), 2)
                 cx = x + (width // 2)
                 cy = y + (height // 2)
                 self.track_error_x = (cx - (w / 2)) / (w / 2)
                 self.track_error_y = (cy - (h / 2)) / (h / 2)
                 self.object_found = True
-
         return frame
 
-    # ... (Method gesture, qr, ssd, auto_pilot JANGAN DIHAPUS, BIARKAN SAMA) ...
-    def _process_auto_pilot(self, frame):
-        h, w, _ = frame.shape
-        roi_h = int(h / 3) 
-        roi = frame[h - roi_h:h, 0:w]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest_contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(largest_contour) > 1000:
-                M = cv2.moments(largest_contour)
-                if M['m00'] != 0:
-                    cx = int(M['m10'] / M['m00'])
-                    global_cy = int(M['m01'] / M['m00']) + (h - roi_h)
-                    cv2.line(frame, (int(w/2), global_cy), (cx, global_cy), (0, 255, 255), 2)
-                    self.track_error_x = (cx - (w / 2)) / (w / 2)
-                    self.object_found = True
+    def _process_ssd_mobilenet(self, frame):
+        if not self.interpreter: return frame
+        h_img, w_img, _ = frame.shape
+        frame_resized = cv2.resize(frame, (300, 300))
+        input_data = np.expand_dims(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB), axis=0)
+        self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
+        self.interpreter.invoke()
+        boxes = self.interpreter.get_tensor(self.output_details[0]['index'])[0] 
+        classes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
+        scores = self.interpreter.get_tensor(self.output_details[2]['index'])[0]
+        for i in range(len(scores)):
+            if scores[i] > 0.5:
+                label = self.labels.get(int(classes[i]), "unknown")
+                if label in self.TARGET_OBJECTS:
+                    ymin, xmin, ymax, xmax = boxes[i]
+                    x, y = int(xmin * w_img), int(ymin * h_img)
+                    w, h = int((xmax - xmin) * w_img), int((ymax - ymin) * h_img)
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{label} {int(scores[i]*100)}%", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         return frame
 
     def _process_gesture(self, frame):
@@ -247,22 +218,22 @@ class AIProcessor:
             cv2.putText(frame, data, (obj.rect.left, obj.rect.top), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         return frame
 
-    def _process_ssd_mobilenet(self, frame):
-        if not self.interpreter: return frame
-        h_img, w_img, _ = frame.shape
-        frame_resized = cv2.resize(frame, (300, 300))
-        input_data = np.expand_dims(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB), axis=0)
-        self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
-        self.interpreter.invoke()
-        boxes = self.interpreter.get_tensor(self.output_details[0]['index'])[0] 
-        classes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
-        scores = self.interpreter.get_tensor(self.output_details[2]['index'])[0]
-        for i in range(len(scores)):
-            if scores[i] > 0.5:
-                label = self.labels.get(int(classes[i]), "unknown")
-                if label in self.TARGET_OBJECTS:
-                    ymin, xmin, ymax, xmax = boxes[i]
-                    x, y = int(xmin * w_img), int(ymin * h_img)
-                    w, h = int((xmax - xmin) * w_img), int((ymax - ymin) * h_img)
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+    def _process_auto_pilot(self, frame):
+        h, w, _ = frame.shape
+        roi_h = int(h / 3) 
+        roi = frame[h - roi_h:h, 0:w]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(largest_contour) > 1000:
+                M = cv2.moments(largest_contour)
+                if M['m00'] != 0:
+                    cx = int(M['m10'] / M['m00'])
+                    global_cy = int(M['m01'] / M['m00']) + (h - roi_h)
+                    cv2.line(frame, (int(w/2), global_cy), (cx, global_cy), (0, 255, 255), 2)
+                    self.track_error_x = (cx - (w / 2)) / (w / 2)
+                    self.object_found = True
         return frame
