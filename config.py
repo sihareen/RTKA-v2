@@ -29,3 +29,15 @@ PIN_RR_BWD = 6
 PIN_SERVO_PAN = 12   # Servo Geleng (Kiri-Kanan)
 PIN_SERVO_TILT = 13  # Servo Angguk (Atas-Bawah)
 PIN_BUZZER = 16      # Buzzer Aktif
+
+# --- ULTRASONIC (HC-SR04)---
+PIN_HCSR_TRIG = 26
+PIN_HCSR_ECHO = 19
+
+# --- (BFD-1000 / 5 Channel IR) ---
+# Urutan: Kiri Jauh (LL), Kiri (L), Tengah (M), Kanan (R), Kanan Jauh (RR)
+PIN_LINE_LL = 4
+PIN_LINE_L = 14
+PIN_LINE_M = 15
+PIN_LINE_R = 18
+PIN_LINE_RR = 21
