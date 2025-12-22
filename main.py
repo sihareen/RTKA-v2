@@ -4,15 +4,16 @@ import sys
 import uvicorn
 import json
 import asyncio
-import math # <--- PENTING: Untuk gerakan gelombang servo
+import math
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-import time  # <--- TAMBAHKAN INI (PENTING!)
+import time 
 from config import HOST, PORT
 from modules.motor import MotorDriver
 from modules.camera import VideoStreamer
 from modules.extras import ExtraDrivers
+from modules.sensors import SensorManager
 
 os.environ["OPENCV_LOG_LEVEL"] = "FATAL"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -23,6 +24,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 robot_motor = MotorDriver(simulation=False) 
 robot_cam = VideoStreamer()
 robot_extras = ExtraDrivers()
+robot_sensors = SensorManager()
 CURRENT_CONTROLLER = "none"
 
 # --- HELPER: Mengatur Mode & Kirim Feedback ---
@@ -454,19 +456,115 @@ async def ws_avoid(websocket: WebSocket):
     global CURRENT_CONTROLLER
     await websocket.accept()
     CURRENT_CONTROLLER = "avoid"
+    
     robot_cam.ai.set_mode("off")
-    print("[WS] AVOID Connected (Standby)")
+    print("[WS] AVOID Connected")
+    
+    current_mode = "standby"
+    
+    # Default: Semua sensor aktif (jika user lupa setting)
+    active_mask = [1, 1, 1, 1, 1] 
+    
     try:
         while True:
+            # 1. TERIMA PERINTAH
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                 payload = json.loads(data)
-                if payload.get("cmd") == "set_ai_mode":
-                    mode = payload.get("mode")
-                    await websocket.send_text(json.dumps({"status": "active", "mode": mode}))
+                cmd = payload.get("cmd")
+                
+                if cmd == "set_ai_mode":
+                    mode = payload.get("mode") 
+                    current_mode = mode
+                    
+                    if mode == "avoid_hcsr":
+                        msg = "MODE: OBSTACLE AVOID"
+                    elif mode == "avoid_hybrid":
+                        # BACA CONFIG DARI UI
+                        # config: {"ll": true, "l": false, ...}
+                        cfg = payload.get("config", {})
+                        
+                        # Buat Masking Array [LL, L, M, R, RR]
+                        # Jika True jadi 1, False jadi 0
+                        active_mask = [
+                            1 if cfg.get("ll", True) else 0,
+                            1 if cfg.get("l",  True) else 0,
+                            1 if cfg.get("m",  True) else 0,
+                            1 if cfg.get("r",  True) else 0,
+                            1 if cfg.get("rr", True) else 0
+                        ]
+                        print(f"[LINE] Sensor Mask: {active_mask}")
+                        msg = f"MODE: LINE (Mask: {active_mask})"
+                    else:
+                        msg = "MODE: STANDBY"
+                        robot_motor.stop()
+                        
+                    await websocket.send_text(json.dumps({"status": "active", "mode": msg}))
+                    
             except asyncio.TimeoutError: pass
-            await asyncio.sleep(0.1)
-    except: pass
+
+            # 2. LOGIKA UTAMA
+            if CURRENT_CONTROLLER == "avoid" and current_mode != "standby":
+                
+                distance = robot_sensors.get_distance()
+                
+                # --- MODE A: OBSTACLE ONLY ---
+                if current_mode == "avoid_hcsr":
+                    if distance < 25: 
+                        robot_motor.stop()
+                        await asyncio.sleep(0.2)
+                        robot_motor.move(-0.4, 0.0)
+                        await asyncio.sleep(0.5)
+                        robot_motor.move(0.0, -0.6)
+                        await asyncio.sleep(0.4)
+                    else:
+                        robot_motor.move(0.4, 0.0)
+
+                # --- MODE B: LINE + AVOID (WITH MASKING) ---
+                elif current_mode == "avoid_hybrid":
+                    if distance < 15:
+                        # Safety Stop
+                        robot_motor.stop()
+                    else:
+                        # 1. Baca Sensor Fisik [1, 0, 1, 0, 1]
+                        raw_lines = robot_sensors.get_line_status()
+                        
+                        # 2. Terapkan Masking (Filter User)
+                        # Logika AND: Hanya anggap 1 jika fisik detect (1) DAN user enable (1)
+                        lines = [r & m for r, m in zip(raw_lines, active_mask)]
+                        
+                        # Debugging (Opsional, matikan kalau spam)
+                        # print(f"Raw: {raw_lines} -> Masked: {lines}")
+
+                        # 3. Logika Navigasi (Berdasarkan data yang sudah di-filter)
+                        if lines[2] == 1: # Tengah
+                            robot_motor.move(0.4, 0.0)
+                            
+                        elif lines[1] == 1: # Kiri
+                            robot_motor.move(0.3, -0.4) 
+                            
+                        elif lines[3] == 1: # Kanan
+                            robot_motor.move(0.3, 0.4)
+
+                        elif lines[0] == 1: # Kiri Jauh
+                            robot_motor.move(0.2, -0.6)
+                            
+                        elif lines[4] == 1: # Kanan Jauh
+                            robot_motor.move(0.2, 0.6)
+                            
+                        elif sum(lines) == 0: # Tidak ada garis (sesuai filter)
+                            robot_motor.stop()
+                        
+                        elif sum(lines) >= 3: # Perempatan
+                            robot_motor.stop()
+            
+            await asyncio.sleep(0.05)
+
+    except Exception as e:
+        print(f"[AVOID] Error: {e}")
+    finally:
+        robot_motor.stop()
+
 
 @app.get("/")
 def index(): return {"status": "Raspbot RTKAv2", "controller": CURRENT_CONTROLLER}
