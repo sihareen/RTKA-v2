@@ -5,15 +5,16 @@ import uvicorn
 import json
 import asyncio
 import math
+import time 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-import time 
 from config import HOST, PORT
 from modules.motor import MotorDriver
 from modules.camera import VideoStreamer
 from modules.extras import ExtraDrivers
 from modules.sensors import SensorManager
+from modules.config_loader import cfg_mgr
 
 os.environ["OPENCV_LOG_LEVEL"] = "FATAL"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -37,6 +38,68 @@ async def handle_ai_switch(websocket, payload):
         return True
     return False
 
+
+def reload_hardware():
+    print("[SYSTEM] Reloading Hardware...")
+    global robot_motor, robot_extras, robot_sensors
+    
+    # 1. Matikan Hardware Lama
+    if 'robot_motor' in globals(): robot_motor.close()
+    if 'robot_extras' in globals(): robot_extras.close()
+    if 'robot_sensors' in globals(): robot_sensors.close()
+    
+    # 2. Hidupkan Hardware Baru (Akan otomatis baca status cfg_mgr)
+    try:
+        robot_motor = MotorDriver(simulation=False)
+        robot_extras = ExtraDrivers()
+        robot_sensors = SensorManager()
+        print(f"[SYSTEM] Hardware Reloaded. User Mode: {cfg_mgr.use_user_config}")
+    except Exception as e:
+        print(f"[SYSTEM] Hardware Init Failed: {e}")
+
+# WEBSOCKET CONFIG SWITCHER
+@app.websocket("/ws/configSwitch")
+async def ws_config_switch(websocket: WebSocket):
+    await websocket.accept()
+    print("[WS] Config Switcher Connected")
+    
+    try:
+        while True:
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            cmd = payload.get("cmd")
+            
+            # CASE A: SIMPAN CONFIG DARI USER
+            if cmd == "save_config":
+                new_config = payload.get("config")
+                # Format Config harus sesuai kategori (motor, servo, dll)
+                cfg_mgr.save_user_config(new_config)
+                await websocket.send_text(json.dumps({"status": "saved", "msg": "Config saved to JSON"}))
+                
+            # CASE B: GANTI MODE (DEFAULT <-> USER)
+            elif cmd == "set_mode":
+                mode = payload.get("mode") # "default" atau "user"
+                
+                if mode == "user":
+                    cfg_mgr.use_user_config = True
+                    msg = "Switched to USER Config"
+                else:
+                    cfg_mgr.use_user_config = False
+                    msg = "Switched to DEFAULT Config"
+                
+                # RESTART HARDWARE SEKARANG!
+                reload_hardware()
+                
+                await websocket.send_text(json.dumps({
+                    "status": "switched", 
+                    "mode": mode,
+                    "msg": msg
+                }))
+                
+    except Exception as e:
+        print(f"[CFG] Error: {e}")
+
+
 # 1. REMOTE CONTROL
 @app.websocket("/ws/control")
 async def ws_control(websocket: WebSocket):
@@ -44,17 +107,42 @@ async def ws_control(websocket: WebSocket):
     await websocket.accept()
     CURRENT_CONTROLLER = "manual"
     robot_cam.ai.set_mode("off")
-    print("[WS] MANUAL Connected")
+    print("[WS] MANUAL Connected - LOGGING ACTIVE")
+    
     try:
         while True:
             data = await websocket.receive_text()
             payload = json.loads(data)
             cmd = payload.get("cmd")
+            
             if CURRENT_CONTROLLER == "manual":
-                if cmd == "move": robot_motor.move(float(payload.get("y",0)), float(payload.get("x",0)), float(payload.get("speed",100)))
-                elif cmd == "servo": robot_extras.move_servo(payload.get("type"), payload.get("angle",0))
-                elif cmd == "buzzer": robot_extras.set_buzzer(payload.get("state", "off"))
-                elif cmd == "stop": robot_motor.stop()
+                # --- MOTOR ---
+                if cmd == "move":
+                    y_val = float(payload.get("y", 0))
+                    x_val = float(payload.get("x", 0))
+                    speed_limit = float(payload.get("speed", 100))
+                    print(f"[MANUAL] Y: {y_val:.2f} | X: {x_val:.2f} | Limit: {speed_limit}%")
+                    robot_motor.move(y_val, x_val, speed_limit)
+                
+                # --- SERVO ---
+                elif cmd == "servo": 
+                    robot_extras.move_servo(payload.get("type"), payload.get("angle",0))
+                
+                # --- BUZZER ---
+                elif cmd == "buzzer": 
+                    robot_extras.set_buzzer(payload.get("state", "off"))
+                
+                # --- LED CONTROL (BARU) ---
+                elif cmd == "led":
+                    # Format Payload: {"cmd": "led", "color": "r", "state": "on"}
+                    color = payload.get("color") # "r", "g", "y"
+                    state = payload.get("state") # "on", "off"
+                    robot_extras.set_led(color, state)
+                    
+                # --- STOP ---
+                elif cmd == "stop": 
+                    print("[MANUAL] STOP")
+                    robot_motor.stop()
     except: pass
     finally: robot_motor.stop()
 
@@ -102,108 +190,119 @@ async def ws_autopilot(websocket: WebSocket):
         robot_motor.stop()
         robot_cam.ai.set_mode("off")
 
-# 3. TARGET TRACKING (SERVO HEAD CENTER)
+
+# 3. TARGET TRACKING (VISUALIZATON MODE)
 @app.websocket("/ws/tracking")
 async def ws_tracking(websocket: WebSocket):
     global CURRENT_CONTROLLER
     await websocket.accept()
     CURRENT_CONTROLLER = "tracking"
     
-    # --- DEFAULT: MODE NONE (STANDBY) ---
     robot_cam.ai.set_mode("off") 
-    print("[WS] TRACKING Connected (Standby)")
+    print("[WS] TRACKING Connected")
     
-    # Reset hardware ke tengah
+    # SETUP AWAL
     pan_pos = 0.0
     tilt_pos = 0.0
     robot_extras.move_servo("pan", 0)
     robot_extras.move_servo("tilt", 0)
 
-    # Variabel untuk Smoothing (Menyimpan nilai error sebelumnya)
     prev_error_x = 0.0
     prev_error_y = 0.0
 
-    # KIRIM STATUS KE UI
+    # --- CONFIG DEADZONE (20%) ---
+    ZONA_X = 0.20
+    ZONA_Y = 0.20
+    
+    # AKTIFKAN GAMBAR KOTAK DI KAMERA (KIRIM KE AI.PY)
+    robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
+
     await websocket.send_text(json.dumps({"status": "active", "mode": "standby"}))
 
     try:
         while True:
+            # 1. TERIMA INPUT
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                 payload = json.loads(data)
                 
                 if payload.get("cmd") == "set_ai_mode":
                     req = payload.get("mode") 
-                    
                     if req == "none":
                         robot_cam.ai.set_mode("off")
+                        # Reset
                         pan_pos = 0.0
                         tilt_pos = 0.0
-                        prev_error_x = 0.0 # Reset filter
+                        prev_error_x = 0.0
                         prev_error_y = 0.0
                         robot_extras.move_servo("pan", 0)
                         robot_extras.move_servo("tilt", 0)
+                        await asyncio.sleep(0.5)
+                        robot_extras.detach_servos()
+                        
+                        # Matikan Visualisasi Deadzone saat Standby
+                        # (Opsional: Kalau mau tetap tampil, hapus baris ini)
+                        # robot_cam.ai.set_deadzone(False) 
+                        
                         await websocket.send_text(json.dumps({"status": "active", "mode": "standby"}))
-
+                        
                     elif req == "face_track":
+                        # Pastikan visualisasi nyala
+                        robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
                         robot_cam.ai.set_mode("face_detection")
                         await websocket.send_text(json.dumps({"status": "active", "mode": "face_track"}))
                         
                     elif req == "color_track":
+                        robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
                         color = payload.get("color", "red") 
                         robot_cam.ai.set_color_target(color)
                         robot_cam.ai.set_mode("color_detection")
-                        await websocket.send_text(json.dumps({"status": "active", "mode": f"track_{color}"}))
-                        
+                        await websocket.send_text(json.dumps({"status": "active", "mode": f"track_{color}"}))     
             except asyncio.TimeoutError: pass
 
+            # 2. LOGIKA TRACKING
             if CURRENT_CONTROLLER == "tracking" and robot_cam.ai.mode != "off" and robot_cam.ai.object_found:
                 
-                # 1. AMBIL DATA ERROR MENTAH (-1.0 s/d 1.0)
                 raw_error_x = robot_cam.ai.track_error_x 
-                raw_error_y = robot_cam.ai.track_error_y 
+                raw_error_y = getattr(robot_cam.ai, 'track_error_y', 0.0)
 
-                # 2. TERAPKAN LOW PASS FILTER (SMOOTHING)
-                # Rumus: (NilaiBaru * alpha) + (NilaiLama * (1-alpha))
-                # Alpha kecil (0.2) = Sangat smooth tapi agak lambat (cinematic)
-                # Alpha besar (0.8) = Respon cepat tapi agak kasar
-                alpha = 0.3 
-                
+                # Smoothing
+                alpha = 0.2
                 smooth_x = (raw_error_x * alpha) + (prev_error_x * (1.0 - alpha))
                 smooth_y = (raw_error_y * alpha) + (prev_error_y * (1.0 - alpha))
-                
-                # Simpan nilai untuk frame berikutnya
                 prev_error_x = smooth_x
                 prev_error_y = smooth_y
 
-                # 3. PENGATURAN SENSITIVITAS (GAIN)
-                # Turunkan sedikit dari 3.0 ke 2.0 agar tidak loncat-loncat
-                pan_speed = 2.0  
-                tilt_speed = 2.0 
-                
-                # 4. DEADZONE (Toleransi Tengah)
-                # Jika error sangat kecil (di bawah 0.15), anggap 0 biar servo diam anteng
-                if abs(smooth_x) < 0.15: smooth_x = 0
-                if abs(smooth_y) < 0.15: smooth_y = 0
+                # LOGIKA DEADZONE (Visualisasi sesuai dengan yang digambar)
+                if abs(smooth_x) < ZONA_X: smooth_x = 0
+                if abs(smooth_y) < ZONA_Y: smooth_y = 0
 
-                # 5. KALKULASI POSISI BARU
-                pan_pos -= (smooth_x * pan_speed)
-                tilt_pos += (smooth_y * tilt_speed) 
+                if smooth_x != 0 or smooth_y != 0:
+                    gain = 0.5 
+                    delta_pan = smooth_x * gain
+                    delta_tilt = smooth_y * gain
+                    
+                    MAX_STEP = 1.0 
+                    delta_pan = max(-MAX_STEP, min(MAX_STEP, delta_pan))
+                    delta_tilt = max(-MAX_STEP, min(MAX_STEP, delta_tilt))
 
-                # 6. LIMIT (CLAMP) -90 s/d 90
-                pan_pos = max(-90, min(90, pan_pos))
-                tilt_pos = max(-90, min(90, tilt_pos))
-                
-                # 7. EKSEKUSI KE HARDWARE
-                robot_extras.move_servo("pan", int(pan_pos))
-                robot_extras.move_servo("tilt", int(tilt_pos))
-            
+                    pan_pos -= delta_pan 
+                    tilt_pos += delta_tilt
+
+                    pan_pos = max(-90, min(90, pan_pos))
+                    tilt_pos = max(-90, min(90, tilt_pos))
+                    
+                    robot_extras.move_servo("pan", int(pan_pos))
+                    robot_extras.move_servo("tilt", int(tilt_pos))
+
             await asyncio.sleep(0.04) 
 
     except Exception as e:
         print(f"[TRACK] Error: {e}")
     finally:
-        pass
+        # Matikan visualisasi deadzone saat disconnect
+        robot_cam.ai.set_deadzone(False)
+        robot_extras.detach_servos()
 
 
 # 4. RECOGNITION CONTROL (GESTURE & COLOR FOLLOW)
@@ -450,7 +549,7 @@ async def ws_qr(websocket: WebSocket):
         robot_cam.ai.set_mode("off")
 
         
-# 7. AVOID & FOLLOW
+#  AVOID & FOLLOW (SPEED 6% + SEQUENTIAL CHECK)
 @app.websocket("/ws/avoid")
 async def ws_avoid(websocket: WebSocket):
     global CURRENT_CONTROLLER
@@ -458,18 +557,20 @@ async def ws_avoid(websocket: WebSocket):
     CURRENT_CONTROLLER = "avoid"
     
     robot_cam.ai.set_mode("off")
-    print("[WS] AVOID Connected")
+    print("[WS] AVOID Connected (Speed 6%)")
     
     current_mode = "standby"
-    
-    # Default: Semua sensor aktif (jika user lupa setting)
     active_mask = [1, 1, 1, 1, 1] 
+    
+    # --- KONFIGURASI KECEPATAN ---
+    SPEED_MAJU  = 0.06  # 6% (Sesuai Request)
+    SPEED_PUTAR = 0.25  # 50% (Agar kuat memutar beban robot)
     
     try:
         while True:
             # 1. TERIMA PERINTAH
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
                 payload = json.loads(data)
                 cmd = payload.get("cmd")
                 
@@ -478,14 +579,9 @@ async def ws_avoid(websocket: WebSocket):
                     current_mode = mode
                     
                     if mode == "avoid_hcsr":
-                        msg = "MODE: OBSTACLE AVOID"
+                        msg = f"MODE: AVOID (Speed {int(SPEED_MAJU*100)}%)"
                     elif mode == "avoid_hybrid":
-                        # BACA CONFIG DARI UI
-                        # config: {"ll": true, "l": false, ...}
                         cfg = payload.get("config", {})
-                        
-                        # Buat Masking Array [LL, L, M, R, RR]
-                        # Jika True jadi 1, False jadi 0
                         active_mask = [
                             1 if cfg.get("ll", True) else 0,
                             1 if cfg.get("l",  True) else 0,
@@ -493,14 +589,12 @@ async def ws_avoid(websocket: WebSocket):
                             1 if cfg.get("r",  True) else 0,
                             1 if cfg.get("rr", True) else 0
                         ]
-                        print(f"[LINE] Sensor Mask: {active_mask}")
-                        msg = f"MODE: LINE (Mask: {active_mask})"
+                        msg = f"MODE: LINE HYBRID"
                     else:
                         msg = "MODE: STANDBY"
                         robot_motor.stop()
                         
                     await websocket.send_text(json.dumps({"status": "active", "mode": msg}))
-                    
             except asyncio.TimeoutError: pass
 
             # 2. LOGIKA UTAMA
@@ -508,57 +602,103 @@ async def ws_avoid(websocket: WebSocket):
                 
                 distance = robot_sensors.get_distance()
                 
-                # --- MODE A: OBSTACLE ONLY ---
+                # =========================================
+                # MODE A: OBSTACLE AVOID (SPEED 6%)
+                # =========================================
                 if current_mode == "avoid_hcsr":
-                    if distance < 25: 
-                        robot_motor.stop()
-                        await asyncio.sleep(0.2)
-                        robot_motor.move(-0.4, 0.0)
-                        await asyncio.sleep(0.5)
-                        robot_motor.move(0.0, -0.6)
-                        await asyncio.sleep(0.4)
-                    else:
-                        robot_motor.move(0.4, 0.0)
-
-                # --- MODE B: LINE + AVOID (WITH MASKING) ---
-                elif current_mode == "avoid_hybrid":
-                    if distance < 15:
-                        # Safety Stop
-                        robot_motor.stop()
-                    else:
-                        # 1. Baca Sensor Fisik [1, 0, 1, 0, 1]
-                        raw_lines = robot_sensors.get_line_status()
+                    
+                    # --- JIKA ADA HALANGAN (< 25 CM) ---
+                    if 2 < distance < 25: 
+                        print(f"!!! STOP ({distance}cm) -> CEK KIRI/KANAN !!!")
                         
-                        # 2. Terapkan Masking (Filter User)
-                        # Logika AND: Hanya anggap 1 jika fisik detect (1) DAN user enable (1)
+                        # 1. STOP TOTAL
+                        robot_motor.stop()
+                        await asyncio.sleep(0.5)
+                        
+                        # 2. MUNDUR DIKIT (Agar ada ruang putar)
+                        # Mundur pakai speed agak besar dikit biar gerak
+                        robot_motor.move(-0.2, 0.0) 
+                        await asyncio.sleep(0.2)
+                        robot_motor.stop()
+                        
+                        # ==================================
+                        # PHASE 1: CEK KIRI
+                        # ==================================
+                        print("1. Cek Kiri...")
+                        robot_motor.move(0.0, -SPEED_PUTAR) # Putar Kiri
+                        await asyncio.sleep(0.6) 
+                        robot_motor.stop()
+                        
+                        await asyncio.sleep(0.5) # Jeda Sensor
+                        dist_kiri = robot_sensors.get_distance()
+                        print(f"   -> Jarak Kiri: {dist_kiri}cm")
+                        
+                        if dist_kiri > 50:
+                            print("   -> KIRI AMAN. Gas...")
+                            # Biarkan loop lanjut, robot sudah menghadap kiri
+                        
+                        else:
+                            # ==================================
+                            # PHASE 2: CEK KANAN (JIKA KIRI GAGAL)
+                            # ==================================
+                            print("   -> Kiri Sempit. Cek Kanan...")
+                            
+                            # Putar Balik ke Kanan (Waktu 2x lipat untuk nyebrang 180 derajat)
+                            robot_motor.move(0.0, SPEED_PUTAR) 
+                            await asyncio.sleep(1.2) 
+                            robot_motor.stop()
+                            
+                            await asyncio.sleep(0.5)
+                            dist_kanan = robot_sensors.get_distance()
+                            print(f"   -> Jarak Kanan: {dist_kanan}cm")
+                            
+                            if dist_kanan > 50:
+                                print("   -> KANAN AMAN. Gas...")
+                                # Robot sudah menghadap kanan
+                            
+                            else:
+                                # ==================================
+                                # PHASE 3: U-TURN (JIKA SEMUA GAGAL)
+                                # ==================================
+                                print("   -> BUNTU TOTAL. Putar Balik...")
+                                
+                                # Putar Kanan lagi agar menghadap belakang
+                                robot_motor.move(0.0, SPEED_PUTAR)
+                                await asyncio.sleep(0.7) 
+                                robot_motor.stop()
+                                await asyncio.sleep(0.5)
+
+                    # --- JIKA AMAN (> 25 CM) ---
+                    else:
+                        # JALAN KONSTAN 6%
+                        robot_motor.move(SPEED_MAJU, 0.0)
+
+                # =========================================
+                # MODE B: HYBRID (LINE + AVOID)
+                # =========================================
+                elif current_mode == "avoid_hybrid":
+                    if 2 < distance < 25:
+                        robot_motor.stop() 
+                    else:
+                        raw_lines = robot_sensors.get_line_status()
                         lines = [r & m for r, m in zip(raw_lines, active_mask)]
                         
-                        # Debugging (Opsional, matikan kalau spam)
-                        # print(f"Raw: {raw_lines} -> Masked: {lines}")
-
-                        # 3. Logika Navigasi (Berdasarkan data yang sudah di-filter)
-                        if lines[2] == 1: # Tengah
-                            robot_motor.move(0.4, 0.0)
-                            
-                        elif lines[1] == 1: # Kiri
-                            robot_motor.move(0.3, -0.4) 
-                            
-                        elif lines[3] == 1: # Kanan
-                            robot_motor.move(0.3, 0.4)
-
-                        elif lines[0] == 1: # Kiri Jauh
-                            robot_motor.move(0.2, -0.6)
-                            
-                        elif lines[4] == 1: # Kanan Jauh
-                            robot_motor.move(0.2, 0.6)
-                            
-                        elif sum(lines) == 0: # Tidak ada garis (sesuai filter)
-                            robot_motor.stop()
+                        # Speed Line Follower mungkin perlu sedikit lebih tinggi dari 6%
+                        # agar koreksinya berasa, tapi saya set aman di 15% dulu.
+                        SPEED_LINE = 0.6 
                         
-                        elif sum(lines) >= 3: # Perempatan
-                            robot_motor.stop()
+                        if lines[2] == 1:   
+                            if lines[1] == 1: robot_motor.move(SPEED_LINE, -0.2)
+                            elif lines[3] == 1: robot_motor.move(SPEED_LINE, 0.2)
+                            else: robot_motor.move(SPEED_LINE, 0.0) 
+                        elif lines[1] == 1: robot_motor.move(0.10, -0.4)
+                        elif lines[3] == 1: robot_motor.move(0.10, 0.4)
+                        elif lines[0] == 1: robot_motor.move(0.08, -0.55)
+                        elif lines[4] == 1: robot_motor.move(0.08, 0.55)
+                        elif sum(lines) >= 3: robot_motor.stop()
+                        elif sum(lines) == 0: robot_motor.stop()
             
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
     except Exception as e:
         print(f"[AVOID] Error: {e}")

@@ -35,7 +35,7 @@ class AIProcessor:
             44: "bottle", 46: "cup", 62: "chair", 63: "couch", 
             64: "potted plant", 67: "dining table", 76: "cell phone"
         }
-        self.TARGET_OBJECTS = ["person", "car", "bottle", "cup", "cell phone"]
+        self.TARGET_OBJECTS = ["person", "car", "motorcycle", "bottle", "cup", "cell phone"]
         self._init_tflite()
 
         self.mp_face = mp.solutions.face_detection

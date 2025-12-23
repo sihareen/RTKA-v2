@@ -32,7 +32,7 @@ PIN_BUZZER = 16      # Buzzer Aktif
 
 # --- ULTRASONIC (HC-SR04)---
 PIN_HCSR_TRIG = 26
-PIN_HCSR_ECHO = 19
+PIN_HCSR_ECHO = 20
 
 # --- (BFD-1000 / 5 Channel IR) ---
 # Urutan: Kiri Jauh (LL), Kiri (L), Tengah (M), Kanan (R), Kanan Jauh (RR)
@@ -41,3 +41,7 @@ PIN_LINE_L = 14
 PIN_LINE_M = 15
 PIN_LINE_R = 18
 PIN_LINE_RR = 21
+
+PIN_LED_R = 7   # Red
+PIN_LED_Y = 8   # Yellow
+PIN_LED_G = 9  # Green
