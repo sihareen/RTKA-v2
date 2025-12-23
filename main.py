@@ -5,15 +5,16 @@ import uvicorn
 import json
 import asyncio
 import math
+import time 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-import time 
 from config import HOST, PORT
 from modules.motor import MotorDriver
 from modules.camera import VideoStreamer
 from modules.extras import ExtraDrivers
 from modules.sensors import SensorManager
+from modules.config_loader import cfg_mgr
 
 os.environ["OPENCV_LOG_LEVEL"] = "FATAL"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -37,6 +38,68 @@ async def handle_ai_switch(websocket, payload):
         return True
     return False
 
+
+def reload_hardware():
+    print("[SYSTEM] Reloading Hardware...")
+    global robot_motor, robot_extras, robot_sensors
+    
+    # 1. Matikan Hardware Lama
+    if 'robot_motor' in globals(): robot_motor.close()
+    if 'robot_extras' in globals(): robot_extras.close()
+    if 'robot_sensors' in globals(): robot_sensors.close()
+    
+    # 2. Hidupkan Hardware Baru (Akan otomatis baca status cfg_mgr)
+    try:
+        robot_motor = MotorDriver(simulation=False)
+        robot_extras = ExtraDrivers()
+        robot_sensors = SensorManager()
+        print(f"[SYSTEM] Hardware Reloaded. User Mode: {cfg_mgr.use_user_config}")
+    except Exception as e:
+        print(f"[SYSTEM] Hardware Init Failed: {e}")
+
+# WEBSOCKET CONFIG SWITCHER
+@app.websocket("/ws/configSwitch")
+async def ws_config_switch(websocket: WebSocket):
+    await websocket.accept()
+    print("[WS] Config Switcher Connected")
+    
+    try:
+        while True:
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            cmd = payload.get("cmd")
+            
+            # CASE A: SIMPAN CONFIG DARI USER
+            if cmd == "save_config":
+                new_config = payload.get("config")
+                # Format Config harus sesuai kategori (motor, servo, dll)
+                cfg_mgr.save_user_config(new_config)
+                await websocket.send_text(json.dumps({"status": "saved", "msg": "Config saved to JSON"}))
+                
+            # CASE B: GANTI MODE (DEFAULT <-> USER)
+            elif cmd == "set_mode":
+                mode = payload.get("mode") # "default" atau "user"
+                
+                if mode == "user":
+                    cfg_mgr.use_user_config = True
+                    msg = "Switched to USER Config"
+                else:
+                    cfg_mgr.use_user_config = False
+                    msg = "Switched to DEFAULT Config"
+                
+                # RESTART HARDWARE SEKARANG!
+                reload_hardware()
+                
+                await websocket.send_text(json.dumps({
+                    "status": "switched", 
+                    "mode": mode,
+                    "msg": msg
+                }))
+                
+    except Exception as e:
+        print(f"[CFG] Error: {e}")
+
+
 # 1. REMOTE CONTROL
 @app.websocket("/ws/control")
 async def ws_control(websocket: WebSocket):
@@ -44,17 +107,42 @@ async def ws_control(websocket: WebSocket):
     await websocket.accept()
     CURRENT_CONTROLLER = "manual"
     robot_cam.ai.set_mode("off")
-    print("[WS] MANUAL Connected")
+    print("[WS] MANUAL Connected - LOGGING ACTIVE")
+    
     try:
         while True:
             data = await websocket.receive_text()
             payload = json.loads(data)
             cmd = payload.get("cmd")
+            
             if CURRENT_CONTROLLER == "manual":
-                if cmd == "move": robot_motor.move(float(payload.get("y",0)), float(payload.get("x",0)), float(payload.get("speed",100)))
-                elif cmd == "servo": robot_extras.move_servo(payload.get("type"), payload.get("angle",0))
-                elif cmd == "buzzer": robot_extras.set_buzzer(payload.get("state", "off"))
-                elif cmd == "stop": robot_motor.stop()
+                # --- MOTOR ---
+                if cmd == "move":
+                    y_val = float(payload.get("y", 0))
+                    x_val = float(payload.get("x", 0))
+                    speed_limit = float(payload.get("speed", 100))
+                    print(f"[MANUAL] Y: {y_val:.2f} | X: {x_val:.2f} | Limit: {speed_limit}%")
+                    robot_motor.move(y_val, x_val, speed_limit)
+                
+                # --- SERVO ---
+                elif cmd == "servo": 
+                    robot_extras.move_servo(payload.get("type"), payload.get("angle",0))
+                
+                # --- BUZZER ---
+                elif cmd == "buzzer": 
+                    robot_extras.set_buzzer(payload.get("state", "off"))
+                
+                # --- LED CONTROL (BARU) ---
+                elif cmd == "led":
+                    # Format Payload: {"cmd": "led", "color": "r", "state": "on"}
+                    color = payload.get("color") # "r", "g", "y"
+                    state = payload.get("state") # "on", "off"
+                    robot_extras.set_led(color, state)
+                    
+                # --- STOP ---
+                elif cmd == "stop": 
+                    print("[MANUAL] STOP")
+                    robot_motor.stop()
     except: pass
     finally: robot_motor.stop()
 
@@ -461,8 +549,7 @@ async def ws_qr(websocket: WebSocket):
         robot_cam.ai.set_mode("off")
 
         
-# 2. AVOID & FOLLOW (SUPER SLOW CRAWL: 15%)
-# 2. AVOID & FOLLOW (FINAL: AVOID 25CM + PRO LINE FOLLOWER)
+#  AVOID & FOLLOW (SPEED 6% + SEQUENTIAL CHECK)
 @app.websocket("/ws/avoid")
 async def ws_avoid(websocket: WebSocket):
     global CURRENT_CONTROLLER
@@ -470,10 +557,14 @@ async def ws_avoid(websocket: WebSocket):
     CURRENT_CONTROLLER = "avoid"
     
     robot_cam.ai.set_mode("off")
-    print("[WS] AVOID Connected")
+    print("[WS] AVOID Connected (Speed 6%)")
     
     current_mode = "standby"
     active_mask = [1, 1, 1, 1, 1] 
+    
+    # --- KONFIGURASI KECEPATAN ---
+    SPEED_MAJU  = 0.06  # 6% (Sesuai Request)
+    SPEED_PUTAR = 0.25  # 50% (Agar kuat memutar beban robot)
     
     try:
         while True:
@@ -488,7 +579,7 @@ async def ws_avoid(websocket: WebSocket):
                     current_mode = mode
                     
                     if mode == "avoid_hcsr":
-                        msg = "MODE: AVOID (STOP @ 25cm)"
+                        msg = f"MODE: AVOID (Speed {int(SPEED_MAJU*100)}%)"
                     elif mode == "avoid_hybrid":
                         cfg = payload.get("config", {})
                         active_mask = [
@@ -498,8 +589,7 @@ async def ws_avoid(websocket: WebSocket):
                             1 if cfg.get("r",  True) else 0,
                             1 if cfg.get("rr", True) else 0
                         ]
-                        print(f"[LINE] Sensor Mask: {active_mask}")
-                        msg = f"MODE: LINE HYBRID (Mask: {active_mask})"
+                        msg = f"MODE: LINE HYBRID"
                     else:
                         msg = "MODE: STANDBY"
                         robot_motor.stop()
@@ -513,97 +603,100 @@ async def ws_avoid(websocket: WebSocket):
                 distance = robot_sensors.get_distance()
                 
                 # =========================================
-                # MODE A: OBSTACLE AVOID (YANG SUDAH FIX)
+                # MODE A: OBSTACLE AVOID (SPEED 6%)
                 # =========================================
                 if current_mode == "avoid_hcsr":
+                    
+                    # --- JIKA ADA HALANGAN (< 25 CM) ---
                     if 2 < distance < 25: 
-                        print(f"!!! STOP MUTLAK ({distance}cm) !!!")
-                        robot_motor.stop()
-                        await asyncio.sleep(0.5) 
+                        print(f"!!! STOP ({distance}cm) -> CEK KIRI/KANAN !!!")
                         
-                        robot_motor.move(-0.3, 0.0) 
+                        # 1. STOP TOTAL
+                        robot_motor.stop()
+                        await asyncio.sleep(0.5)
+                        
+                        # 2. MUNDUR DIKIT (Agar ada ruang putar)
+                        # Mundur pakai speed agak besar dikit biar gerak
+                        robot_motor.move(-0.2, 0.0) 
                         await asyncio.sleep(0.2)
                         robot_motor.stop()
-                        await asyncio.sleep(0.2)
                         
-                        print("-> Mencari Jalan > 60cm...")
-                        search_start = time.time()
-                        found_path = False
-                        robot_motor.move(0.0, -0.5) 
-                        
-                        while (time.time() - search_start) < 2.5: 
-                            check_dist = robot_sensors.get_distance()
-                            if check_dist > 60: 
-                                found_path = True
-                                break 
-                            await asyncio.sleep(0.05)
-                        
+                        # ==================================
+                        # PHASE 1: CEK KIRI
+                        # ==================================
+                        print("1. Cek Kiri...")
+                        robot_motor.move(0.0, -SPEED_PUTAR) # Putar Kiri
+                        await asyncio.sleep(0.6) 
                         robot_motor.stop()
-                        await asyncio.sleep(0.3)
                         
-                        if not found_path:
-                            robot_motor.move(0.0, 0.6) 
-                            await asyncio.sleep(0.8)
+                        await asyncio.sleep(0.5) # Jeda Sensor
+                        dist_kiri = robot_sensors.get_distance()
+                        print(f"   -> Jarak Kiri: {dist_kiri}cm")
+                        
+                        if dist_kiri > 50:
+                            print("   -> KIRI AMAN. Gas...")
+                            # Biarkan loop lanjut, robot sudah menghadap kiri
+                        
+                        else:
+                            # ==================================
+                            # PHASE 2: CEK KANAN (JIKA KIRI GAGAL)
+                            # ==================================
+                            print("   -> Kiri Sempit. Cek Kanan...")
+                            
+                            # Putar Balik ke Kanan (Waktu 2x lipat untuk nyebrang 180 derajat)
+                            robot_motor.move(0.0, SPEED_PUTAR) 
+                            await asyncio.sleep(1.2) 
                             robot_motor.stop()
-                        
-                    elif distance < 80:
-                        robot_motor.move(0.18, 0.0)
+                            
+                            await asyncio.sleep(0.5)
+                            dist_kanan = robot_sensors.get_distance()
+                            print(f"   -> Jarak Kanan: {dist_kanan}cm")
+                            
+                            if dist_kanan > 50:
+                                print("   -> KANAN AMAN. Gas...")
+                                # Robot sudah menghadap kanan
+                            
+                            else:
+                                # ==================================
+                                # PHASE 3: U-TURN (JIKA SEMUA GAGAL)
+                                # ==================================
+                                print("   -> BUNTU TOTAL. Putar Balik...")
+                                
+                                # Putar Kanan lagi agar menghadap belakang
+                                robot_motor.move(0.0, SPEED_PUTAR)
+                                await asyncio.sleep(0.7) 
+                                robot_motor.stop()
+                                await asyncio.sleep(0.5)
+
+                    # --- JIKA AMAN (> 25 CM) ---
                     else:
-                        robot_motor.move(0.5, 0.0)
+                        # JALAN KONSTAN 6%
+                        robot_motor.move(SPEED_MAJU, 0.0)
 
                 # =========================================
-                # MODE B: HYBRID (LINE + SAFETY STOP)
+                # MODE B: HYBRID (LINE + AVOID)
                 # =========================================
                 elif current_mode == "avoid_hybrid":
-                    
-                    # 1. SAFETY CHECK (Prioritas Tertinggi)
                     if 2 < distance < 25:
-                        # Jika ada halangan di rel, diam menunggu sampai diambil
-                        print(f"[LINE] HALANGAN DI JALUR! ({distance}cm)")
                         robot_motor.stop() 
-                    
                     else:
-                        # 2. LOGIKA GARIS (Variable Speed)
                         raw_lines = robot_sensors.get_line_status()
-                        # Terapkan Masking User
                         lines = [r & m for r, m in zip(raw_lines, active_mask)]
                         
-                        # LOGIKA NAVIGASI (Weighted Priority)
+                        # Speed Line Follower mungkin perlu sedikit lebih tinggi dari 6%
+                        # agar koreksinya berasa, tapi saya set aman di 15% dulu.
+                        SPEED_LINE = 0.6 
                         
-                        # A. LURUS (Sensor Tengah) - Speed Tinggi
                         if lines[2] == 1:   
-                            # Cek sedikit kiri/kanan untuk koreksi halus
-                            if lines[1] == 1: # Agak miring ke kiri
-                                robot_motor.move(0.4, -0.2) 
-                            elif lines[3] == 1: # Agak miring ke kanan
-                                robot_motor.move(0.4, 0.2)
-                            else: # Lurus Sempurna
-                                robot_motor.move(0.5, 0.0) 
-
-                        # B. BELOK (Sensor Samping) - Speed Rendah (Cornering)
-                        # Kita turunkan speed maju (x) dan naikkan speed putar (y)
-                        
-                        elif lines[1] == 1: # Belok Kiri
-                            robot_motor.move(0.25, -0.45)
-                            
-                        elif lines[3] == 1: # Belok Kanan
-                            robot_motor.move(0.25, 0.45)
-                            
-                        # C. BELOK TAJAM / PIVOT (Sensor Ujung) - Hampir Diam
-                        elif lines[0] == 1: # Kiri Tajam
-                            robot_motor.move(0.15, -0.6) # Pivot Kiri
-                            
-                        elif lines[4] == 1: # Kanan Tajam
-                            robot_motor.move(0.15, 0.6)  # Pivot Kanan
-                            
-                        # D. SIMPANG / PEREMPATAN (Semua Hitam)
-                        elif sum(lines) >= 3: 
-                            print("[LINE] Simpang Deteksi - Stop")
-                            robot_motor.stop()
-                            
-                        # E. GARIS HILANG (Semua Putih)
-                        elif sum(lines) == 0: 
-                            robot_motor.stop() # Safety Stop biar tidak nyasar
+                            if lines[1] == 1: robot_motor.move(SPEED_LINE, -0.2)
+                            elif lines[3] == 1: robot_motor.move(SPEED_LINE, 0.2)
+                            else: robot_motor.move(SPEED_LINE, 0.0) 
+                        elif lines[1] == 1: robot_motor.move(0.10, -0.4)
+                        elif lines[3] == 1: robot_motor.move(0.10, 0.4)
+                        elif lines[0] == 1: robot_motor.move(0.08, -0.55)
+                        elif lines[4] == 1: robot_motor.move(0.08, 0.55)
+                        elif sum(lines) >= 3: robot_motor.stop()
+                        elif sum(lines) == 0: robot_motor.stop()
             
             await asyncio.sleep(0.01)
 
@@ -611,6 +704,7 @@ async def ws_avoid(websocket: WebSocket):
         print(f"[AVOID] Error: {e}")
     finally:
         robot_motor.stop()
+
 
 @app.get("/")
 def index(): return {"status": "Raspbot RTKAv2", "controller": CURRENT_CONTROLLER}

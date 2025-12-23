@@ -1,70 +1,56 @@
-from gpiozero import DistanceSensor, DigitalInputDevice
-from gpiozero.pins.lgpio import LGPIOFactory
-from gpiozero import Device
-# --- BAGIAN INI YANG KEMARIN HILANG ---
-from gpiozero.exc import DistanceSensorNoEcho 
-import warnings
-# --------------------------------------
-import config
-
-# Setup Factory untuk Pi 5
-try:
-    Device.pin_factory = LGPIOFactory()
-except:
-    pass
+# modules/sensors.py
+from gpiozero import DistanceSensor, LineSensor
+from config import *
+from modules.config_loader import cfg_mgr
 
 class SensorManager:
     def __init__(self):
-        print("[SENSORS] Initializing Sensors...")
+        # 1. ULTRASONIC
+        trig = cfg_mgr.get_pin("ultrasonic", "trig", PIN_HCSR_TRIG)
+        echo = cfg_mgr.get_pin("ultrasonic", "echo", PIN_HCSR_ECHO)
         
-        # 1. SETUP ULTRASONIC (HC-SR04)
         try:
-            self.ultrasonic = DistanceSensor(
-                echo=config.PIN_HCSR_ECHO, 
-                trigger=config.PIN_HCSR_TRIG,
-                max_distance=1.0 
-            )
-        except Exception as e:
-            print(f"[SENSORS] Error Ultrasonic: {e}")
-            self.ultrasonic = None
+            self.hcsr = DistanceSensor(echo=echo, trigger=trig)
+            print(f"[SENSORS] HC-SR04 Active (T:{trig}, E:{echo})")
+        except:
+            self.hcsr = None
 
-        # 2. SETUP LINE SENSORS (BFD-1000)
+        # 2. LINE FOLLOWER (5 Channel)
+        # Ambil pin dari config atau user define
+        p_ll = cfg_mgr.get_pin("line", "ll", PIN_LINE_LL)
+        p_l  = cfg_mgr.get_pin("line", "l",  PIN_LINE_L)
+        p_m  = cfg_mgr.get_pin("line", "m",  PIN_LINE_M)
+        p_r  = cfg_mgr.get_pin("line", "r",  PIN_LINE_R)
+        p_rr = cfg_mgr.get_pin("line", "rr", PIN_LINE_RR)
+
+        self.lines = {}
         try:
-            self.line_ll = DigitalInputDevice(config.PIN_LINE_LL)
-            self.line_l  = DigitalInputDevice(config.PIN_LINE_L)
-            self.line_m  = DigitalInputDevice(config.PIN_LINE_M)
-            self.line_r  = DigitalInputDevice(config.PIN_LINE_R)
-            self.line_rr = DigitalInputDevice(config.PIN_LINE_RR)
-        except Exception as e:
-            print(f"[SENSORS] Error Line Sensors: {e}")
+            self.lines["LL"] = LineSensor(p_ll)
+            self.lines["L"]  = LineSensor(p_l)
+            self.lines["M"]  = LineSensor(p_m)
+            self.lines["R"]  = LineSensor(p_r)
+            self.lines["RR"] = LineSensor(p_rr)
+            print("[SENSORS] Line Sensors Active")
+        except:
+            print("[SENSORS] Line Sensors Failed")
 
+    def close(self):
+        """Melepas resource GPIO"""
+        if self.hcsr: self.hcsr.close()
+        for s in self.lines.values(): s.close()
+        
     def get_distance(self):
-        """Mengembalikan jarak dalam CM dengan Error Handling"""
-        if self.ultrasonic:
-            try:
-                # Bungkam warning 'no echo' agar tidak spam di console
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error", category=DistanceSensorNoEcho)
-                    
-                    dist_cm = self.ultrasonic.distance * 100
-                    return round(dist_cm, 1)
-            except (DistanceSensorNoEcho, Exception):
-                # Jika sensor error/no echo/timeout, anggap jalan kosong (999 cm)
-                return 999 
-        return 999
+        if self.hcsr: return round(self.hcsr.distance * 100, 1)
+        return 0
 
     def get_line_status(self):
-        """
-        Return List: [LL, L, M, R, RR]
-        Logika: 1 = Garis Hitam, 0 = Lantai Putih
-        """
-        try:
-            return [
-                1 if not self.line_ll.value else 0,
-                1 if not self.line_l.value else 0,
-                1 if not self.line_m.value else 0,
-                1 if not self.line_r.value else 0,
-                1 if not self.line_rr.value else 0
-            ]
-        except:
-            return [0,0,0,0,0]
+        # Return list [1, 0, 1, 0, 0] (Active High/Low logic)
+        res = []
+        keys = ["LL", "L", "M", "R", "RR"]
+        for k in keys:
+            if k in self.lines:
+                # Sesuaikan logic (LineSensor value 1 jika active/hitam)
+                res.append(int(self.lines[k].value))
+            else:
+                res.append(0)
+        return res

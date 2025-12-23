@@ -41,3 +41,7 @@ PIN_LINE_L = 14
 PIN_LINE_M = 15
 PIN_LINE_R = 18
 PIN_LINE_RR = 21
+
+PIN_LED_R = 7   # Red
+PIN_LED_Y = 8   # Yellow
+PIN_LED_G = 9  # Green
