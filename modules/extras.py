@@ -66,12 +66,28 @@ class ExtraDrivers:
         except Exception as e:
             self.buzzer = None
 
+        # Setup Servo dengan koreksi pulse width (standar SG90/MG90)
+        # Min/Max Pulse width bisa dituning jika sudut kurang pas (0.0005 - 0.0025 standar)
         try:
             self.servo_pan = AngularServo(PIN_SERVO_PAN, min_angle=-90, max_angle=90, min_pulse_width=0.0005, max_pulse_width=0.0025)
             self.servo_tilt = AngularServo(PIN_SERVO_TILT, min_angle=-90, max_angle=90, min_pulse_width=0.0005, max_pulse_width=0.0025)
-        except:
+            
+            # [FIX JITTER] Set ke tengah lalu matikan sinyal (Detach)
+            self.servo_pan.angle = 0
+            self.servo_tilt.angle = 0
+            time.sleep(0.5)
+            self.detach_servos() 
+            print("[EXTRAS] Servos Initialized & Detached")
+            
+        except Exception as e:
+            print(f"[EXTRAS] Error Servo: {e}")
             self.servo_pan = None
             self.servo_tilt = None
+
+    def detach_servos(self):
+        """Matikan sinyal PWM ke servo agar tidak bergetar (Jitter)"""
+        if self.servo_pan: self.servo_pan.detach()
+        if self.servo_tilt: self.servo_tilt.detach()
 
     def set_buzzer(self, state):
         if self.buzzer is None: return
@@ -82,28 +98,20 @@ class ExtraDrivers:
             self.buzzer.off()
 
     def play_melody(self, song_name):
-        """
-        Memainkan lagu di Thread, TAPI mengembalikan total durasi (detik)
-        agar main.py tahu berapa lama harus menunggu.
-        """
         if self.buzzer is None: return 0
         if song_name not in SONGS: return 0
 
-        # Hitung total durasi lagu untuk return value
         note_list, duration_list = SONGS[song_name]
         total_duration = 0
         for d in duration_list:
-            total_duration += (d + 0.05) # Ditambah jeda staccato 0.05s
+            total_duration += (d + 0.05)
 
-        # Jalankan musik di background
         t = threading.Thread(target=self._play_melody_worker, args=(song_name,))
         t.daemon = True 
         t.start()       
-        
         return total_duration
 
     def _play_melody_worker(self, song_name):
-        # ... (Sama seperti sebelumnya) ...
         note_list, duration_list = SONGS[song_name]
         for note_char, duration in zip(note_list, duration_list):
             freq = NOTES.get(note_char, 0)
@@ -112,7 +120,6 @@ class ExtraDrivers:
                 self.buzzer.value = 0.5 
             else:
                 self.buzzer.off()
-            
             time.sleep(duration)
             self.buzzer.off()
             time.sleep(0.05)
@@ -120,5 +127,10 @@ class ExtraDrivers:
 
     def move_servo(self, type, angle):
         angle = max(-90, min(90, angle))
-        if type == "pan" and self.servo_pan: self.servo_pan.angle = angle
-        elif type == "tilt" and self.servo_tilt: self.servo_tilt.angle = angle
+        
+        # Gerakkan servo (otomatis attach kembali)
+        if type == "pan" and self.servo_pan: 
+            self.servo_pan.angle = angle
+        elif type == "tilt" and self.servo_tilt: 
+            self.servo_tilt.angle = angle
+            

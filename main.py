@@ -102,108 +102,119 @@ async def ws_autopilot(websocket: WebSocket):
         robot_motor.stop()
         robot_cam.ai.set_mode("off")
 
-# 3. TARGET TRACKING (SERVO HEAD CENTER)
+
+# 3. TARGET TRACKING (VISUALIZATON MODE)
 @app.websocket("/ws/tracking")
 async def ws_tracking(websocket: WebSocket):
     global CURRENT_CONTROLLER
     await websocket.accept()
     CURRENT_CONTROLLER = "tracking"
     
-    # --- DEFAULT: MODE NONE (STANDBY) ---
     robot_cam.ai.set_mode("off") 
-    print("[WS] TRACKING Connected (Standby)")
+    print("[WS] TRACKING Connected")
     
-    # Reset hardware ke tengah
+    # SETUP AWAL
     pan_pos = 0.0
     tilt_pos = 0.0
     robot_extras.move_servo("pan", 0)
     robot_extras.move_servo("tilt", 0)
 
-    # Variabel untuk Smoothing (Menyimpan nilai error sebelumnya)
     prev_error_x = 0.0
     prev_error_y = 0.0
 
-    # KIRIM STATUS KE UI
+    # --- CONFIG DEADZONE (20%) ---
+    ZONA_X = 0.20
+    ZONA_Y = 0.20
+    
+    # AKTIFKAN GAMBAR KOTAK DI KAMERA (KIRIM KE AI.PY)
+    robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
+
     await websocket.send_text(json.dumps({"status": "active", "mode": "standby"}))
 
     try:
         while True:
+            # 1. TERIMA INPUT
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                 payload = json.loads(data)
                 
                 if payload.get("cmd") == "set_ai_mode":
                     req = payload.get("mode") 
-                    
                     if req == "none":
                         robot_cam.ai.set_mode("off")
+                        # Reset
                         pan_pos = 0.0
                         tilt_pos = 0.0
-                        prev_error_x = 0.0 # Reset filter
+                        prev_error_x = 0.0
                         prev_error_y = 0.0
                         robot_extras.move_servo("pan", 0)
                         robot_extras.move_servo("tilt", 0)
+                        await asyncio.sleep(0.5)
+                        robot_extras.detach_servos()
+                        
+                        # Matikan Visualisasi Deadzone saat Standby
+                        # (Opsional: Kalau mau tetap tampil, hapus baris ini)
+                        # robot_cam.ai.set_deadzone(False) 
+                        
                         await websocket.send_text(json.dumps({"status": "active", "mode": "standby"}))
-
+                        
                     elif req == "face_track":
+                        # Pastikan visualisasi nyala
+                        robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
                         robot_cam.ai.set_mode("face_detection")
                         await websocket.send_text(json.dumps({"status": "active", "mode": "face_track"}))
                         
                     elif req == "color_track":
+                        robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
                         color = payload.get("color", "red") 
                         robot_cam.ai.set_color_target(color)
                         robot_cam.ai.set_mode("color_detection")
-                        await websocket.send_text(json.dumps({"status": "active", "mode": f"track_{color}"}))
-                        
+                        await websocket.send_text(json.dumps({"status": "active", "mode": f"track_{color}"}))     
             except asyncio.TimeoutError: pass
 
+            # 2. LOGIKA TRACKING
             if CURRENT_CONTROLLER == "tracking" and robot_cam.ai.mode != "off" and robot_cam.ai.object_found:
                 
-                # 1. AMBIL DATA ERROR MENTAH (-1.0 s/d 1.0)
                 raw_error_x = robot_cam.ai.track_error_x 
-                raw_error_y = robot_cam.ai.track_error_y 
+                raw_error_y = getattr(robot_cam.ai, 'track_error_y', 0.0)
 
-                # 2. TERAPKAN LOW PASS FILTER (SMOOTHING)
-                # Rumus: (NilaiBaru * alpha) + (NilaiLama * (1-alpha))
-                # Alpha kecil (0.2) = Sangat smooth tapi agak lambat (cinematic)
-                # Alpha besar (0.8) = Respon cepat tapi agak kasar
-                alpha = 0.3 
-                
+                # Smoothing
+                alpha = 0.2
                 smooth_x = (raw_error_x * alpha) + (prev_error_x * (1.0 - alpha))
                 smooth_y = (raw_error_y * alpha) + (prev_error_y * (1.0 - alpha))
-                
-                # Simpan nilai untuk frame berikutnya
                 prev_error_x = smooth_x
                 prev_error_y = smooth_y
 
-                # 3. PENGATURAN SENSITIVITAS (GAIN)
-                # Turunkan sedikit dari 3.0 ke 2.0 agar tidak loncat-loncat
-                pan_speed = 2.0  
-                tilt_speed = 2.0 
-                
-                # 4. DEADZONE (Toleransi Tengah)
-                # Jika error sangat kecil (di bawah 0.15), anggap 0 biar servo diam anteng
-                if abs(smooth_x) < 0.15: smooth_x = 0
-                if abs(smooth_y) < 0.15: smooth_y = 0
+                # LOGIKA DEADZONE (Visualisasi sesuai dengan yang digambar)
+                if abs(smooth_x) < ZONA_X: smooth_x = 0
+                if abs(smooth_y) < ZONA_Y: smooth_y = 0
 
-                # 5. KALKULASI POSISI BARU
-                pan_pos -= (smooth_x * pan_speed)
-                tilt_pos += (smooth_y * tilt_speed) 
+                if smooth_x != 0 or smooth_y != 0:
+                    gain = 0.5 
+                    delta_pan = smooth_x * gain
+                    delta_tilt = smooth_y * gain
+                    
+                    MAX_STEP = 1.0 
+                    delta_pan = max(-MAX_STEP, min(MAX_STEP, delta_pan))
+                    delta_tilt = max(-MAX_STEP, min(MAX_STEP, delta_tilt))
 
-                # 6. LIMIT (CLAMP) -90 s/d 90
-                pan_pos = max(-90, min(90, pan_pos))
-                tilt_pos = max(-90, min(90, tilt_pos))
-                
-                # 7. EKSEKUSI KE HARDWARE
-                robot_extras.move_servo("pan", int(pan_pos))
-                robot_extras.move_servo("tilt", int(tilt_pos))
-            
+                    pan_pos -= delta_pan 
+                    tilt_pos += delta_tilt
+
+                    pan_pos = max(-90, min(90, pan_pos))
+                    tilt_pos = max(-90, min(90, tilt_pos))
+                    
+                    robot_extras.move_servo("pan", int(pan_pos))
+                    robot_extras.move_servo("tilt", int(tilt_pos))
+
             await asyncio.sleep(0.04) 
 
     except Exception as e:
         print(f"[TRACK] Error: {e}")
     finally:
-        pass
+        # Matikan visualisasi deadzone saat disconnect
+        robot_cam.ai.set_deadzone(False)
+        robot_extras.detach_servos()
 
 
 # 4. RECOGNITION CONTROL (GESTURE & COLOR FOLLOW)
@@ -450,7 +461,8 @@ async def ws_qr(websocket: WebSocket):
         robot_cam.ai.set_mode("off")
 
         
-# 7. AVOID & FOLLOW
+# 2. AVOID & FOLLOW (SUPER SLOW CRAWL: 15%)
+# 2. AVOID & FOLLOW (FINAL: AVOID 25CM + PRO LINE FOLLOWER)
 @app.websocket("/ws/avoid")
 async def ws_avoid(websocket: WebSocket):
     global CURRENT_CONTROLLER
@@ -461,15 +473,13 @@ async def ws_avoid(websocket: WebSocket):
     print("[WS] AVOID Connected")
     
     current_mode = "standby"
-    
-    # Default: Semua sensor aktif (jika user lupa setting)
     active_mask = [1, 1, 1, 1, 1] 
     
     try:
         while True:
             # 1. TERIMA PERINTAH
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
                 payload = json.loads(data)
                 cmd = payload.get("cmd")
                 
@@ -478,14 +488,9 @@ async def ws_avoid(websocket: WebSocket):
                     current_mode = mode
                     
                     if mode == "avoid_hcsr":
-                        msg = "MODE: OBSTACLE AVOID"
+                        msg = "MODE: AVOID (STOP @ 25cm)"
                     elif mode == "avoid_hybrid":
-                        # BACA CONFIG DARI UI
-                        # config: {"ll": true, "l": false, ...}
                         cfg = payload.get("config", {})
-                        
-                        # Buat Masking Array [LL, L, M, R, RR]
-                        # Jika True jadi 1, False jadi 0
                         active_mask = [
                             1 if cfg.get("ll", True) else 0,
                             1 if cfg.get("l",  True) else 0,
@@ -494,13 +499,12 @@ async def ws_avoid(websocket: WebSocket):
                             1 if cfg.get("rr", True) else 0
                         ]
                         print(f"[LINE] Sensor Mask: {active_mask}")
-                        msg = f"MODE: LINE (Mask: {active_mask})"
+                        msg = f"MODE: LINE HYBRID (Mask: {active_mask})"
                     else:
                         msg = "MODE: STANDBY"
                         robot_motor.stop()
                         
                     await websocket.send_text(json.dumps({"status": "active", "mode": msg}))
-                    
             except asyncio.TimeoutError: pass
 
             # 2. LOGIKA UTAMA
@@ -508,63 +512,105 @@ async def ws_avoid(websocket: WebSocket):
                 
                 distance = robot_sensors.get_distance()
                 
-                # --- MODE A: OBSTACLE ONLY ---
+                # =========================================
+                # MODE A: OBSTACLE AVOID (YANG SUDAH FIX)
+                # =========================================
                 if current_mode == "avoid_hcsr":
-                    if distance < 25: 
+                    if 2 < distance < 25: 
+                        print(f"!!! STOP MUTLAK ({distance}cm) !!!")
+                        robot_motor.stop()
+                        await asyncio.sleep(0.5) 
+                        
+                        robot_motor.move(-0.3, 0.0) 
+                        await asyncio.sleep(0.2)
                         robot_motor.stop()
                         await asyncio.sleep(0.2)
-                        robot_motor.move(-0.4, 0.0)
-                        await asyncio.sleep(0.5)
-                        robot_motor.move(0.0, -0.6)
-                        await asyncio.sleep(0.4)
-                    else:
-                        robot_motor.move(0.4, 0.0)
-
-                # --- MODE B: LINE + AVOID (WITH MASKING) ---
-                elif current_mode == "avoid_hybrid":
-                    if distance < 15:
-                        # Safety Stop
-                        robot_motor.stop()
-                    else:
-                        # 1. Baca Sensor Fisik [1, 0, 1, 0, 1]
-                        raw_lines = robot_sensors.get_line_status()
                         
-                        # 2. Terapkan Masking (Filter User)
-                        # Logika AND: Hanya anggap 1 jika fisik detect (1) DAN user enable (1)
+                        print("-> Mencari Jalan > 60cm...")
+                        search_start = time.time()
+                        found_path = False
+                        robot_motor.move(0.0, -0.5) 
+                        
+                        while (time.time() - search_start) < 2.5: 
+                            check_dist = robot_sensors.get_distance()
+                            if check_dist > 60: 
+                                found_path = True
+                                break 
+                            await asyncio.sleep(0.05)
+                        
+                        robot_motor.stop()
+                        await asyncio.sleep(0.3)
+                        
+                        if not found_path:
+                            robot_motor.move(0.0, 0.6) 
+                            await asyncio.sleep(0.8)
+                            robot_motor.stop()
+                        
+                    elif distance < 80:
+                        robot_motor.move(0.18, 0.0)
+                    else:
+                        robot_motor.move(0.5, 0.0)
+
+                # =========================================
+                # MODE B: HYBRID (LINE + SAFETY STOP)
+                # =========================================
+                elif current_mode == "avoid_hybrid":
+                    
+                    # 1. SAFETY CHECK (Prioritas Tertinggi)
+                    if 2 < distance < 25:
+                        # Jika ada halangan di rel, diam menunggu sampai diambil
+                        print(f"[LINE] HALANGAN DI JALUR! ({distance}cm)")
+                        robot_motor.stop() 
+                    
+                    else:
+                        # 2. LOGIKA GARIS (Variable Speed)
+                        raw_lines = robot_sensors.get_line_status()
+                        # Terapkan Masking User
                         lines = [r & m for r, m in zip(raw_lines, active_mask)]
                         
-                        # Debugging (Opsional, matikan kalau spam)
-                        # print(f"Raw: {raw_lines} -> Masked: {lines}")
-
-                        # 3. Logika Navigasi (Berdasarkan data yang sudah di-filter)
-                        if lines[2] == 1: # Tengah
-                            robot_motor.move(0.4, 0.0)
-                            
-                        elif lines[1] == 1: # Kiri
-                            robot_motor.move(0.3, -0.4) 
-                            
-                        elif lines[3] == 1: # Kanan
-                            robot_motor.move(0.3, 0.4)
-
-                        elif lines[0] == 1: # Kiri Jauh
-                            robot_motor.move(0.2, -0.6)
-                            
-                        elif lines[4] == 1: # Kanan Jauh
-                            robot_motor.move(0.2, 0.6)
-                            
-                        elif sum(lines) == 0: # Tidak ada garis (sesuai filter)
-                            robot_motor.stop()
+                        # LOGIKA NAVIGASI (Weighted Priority)
                         
-                        elif sum(lines) >= 3: # Perempatan
+                        # A. LURUS (Sensor Tengah) - Speed Tinggi
+                        if lines[2] == 1:   
+                            # Cek sedikit kiri/kanan untuk koreksi halus
+                            if lines[1] == 1: # Agak miring ke kiri
+                                robot_motor.move(0.4, -0.2) 
+                            elif lines[3] == 1: # Agak miring ke kanan
+                                robot_motor.move(0.4, 0.2)
+                            else: # Lurus Sempurna
+                                robot_motor.move(0.5, 0.0) 
+
+                        # B. BELOK (Sensor Samping) - Speed Rendah (Cornering)
+                        # Kita turunkan speed maju (x) dan naikkan speed putar (y)
+                        
+                        elif lines[1] == 1: # Belok Kiri
+                            robot_motor.move(0.25, -0.45)
+                            
+                        elif lines[3] == 1: # Belok Kanan
+                            robot_motor.move(0.25, 0.45)
+                            
+                        # C. BELOK TAJAM / PIVOT (Sensor Ujung) - Hampir Diam
+                        elif lines[0] == 1: # Kiri Tajam
+                            robot_motor.move(0.15, -0.6) # Pivot Kiri
+                            
+                        elif lines[4] == 1: # Kanan Tajam
+                            robot_motor.move(0.15, 0.6)  # Pivot Kanan
+                            
+                        # D. SIMPANG / PEREMPATAN (Semua Hitam)
+                        elif sum(lines) >= 3: 
+                            print("[LINE] Simpang Deteksi - Stop")
                             robot_motor.stop()
+                            
+                        # E. GARIS HILANG (Semua Putih)
+                        elif sum(lines) == 0: 
+                            robot_motor.stop() # Safety Stop biar tidak nyasar
             
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
     except Exception as e:
         print(f"[AVOID] Error: {e}")
     finally:
         robot_motor.stop()
-
 
 @app.get("/")
 def index(): return {"status": "Raspbot RTKAv2", "controller": CURRENT_CONTROLLER}
