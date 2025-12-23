@@ -5,7 +5,7 @@ import mediapipe as mp
 import time
 from pyzbar.pyzbar import decode
 
-# ... (Import TFLite & Config sama seperti sebelumnya) ...
+# Cek Import TensorFlow Lite
 try:
     import tflite_runtime.interpreter as tflite
 except ImportError:
@@ -17,9 +17,9 @@ except ImportError:
 class AIProcessor:
     def __init__(self):
         self.mode = "off"
-        self.target_color = "none" # Bisa "none", "all", "red", "green", dll
+        self.target_color = "none" 
         
-        # Output Data
+        # Output Data Tracking
         self.track_error_x = 0.0    
         self.track_error_y = 0.0    
         self.track_area = 0.0 
@@ -27,7 +27,15 @@ class AIProcessor:
         self.qr_data = None         
         self.gesture_data = None    
 
-        # Setup Models (Sama seperti sebelumnya)
+        # --- VISUALISASI DEADZONE ---
+        self.show_deadzone = False
+        self.deadzone_x_val = 0.0
+        self.deadzone_y_val = 0.0
+        
+        # --- TAMBAHAN BARU: VISUALISASI JARAK (HUD) ---
+        self.distance_val = None 
+
+        # Setup Model SSD MobileNet (Objek)
         self.model_path = "assets/ssd_mobilenet_v2.tflite"
         self.interpreter = None
         self.labels = {
@@ -38,6 +46,7 @@ class AIProcessor:
         self.TARGET_OBJECTS = ["person", "car", "motorcycle", "bottle", "cup", "cell phone"]
         self._init_tflite()
 
+        # Setup MediaPipe (Wajah & Tangan)
         self.mp_face = mp.solutions.face_detection
         self.face_detector = self.mp_face.FaceDetection(min_detection_confidence=0.5)
         self.mp_hands = mp.solutions.hands
@@ -62,29 +71,80 @@ class AIProcessor:
         self.track_area = 0.0
         self.track_error_x = 0.0
         self.track_error_y = 0.0
+        
+        # Matikan deadzone visual saat ganti mode (kecuali dinyalakan lagi oleh main.py)
+        if mode == "off":
+            self.show_deadzone = False
+            
         print(f"[AI] Mode: {self.mode}")
 
     def set_color_target(self, color_name):
         self.target_color = color_name.lower() 
         print(f"[AI] Target Color: {self.target_color}")
 
+    def set_deadzone(self, active, x=0.0, y=0.0):
+        """Mengaktifkan visualisasi kotak Deadzone di layar"""
+        self.show_deadzone = active
+        self.deadzone_x_val = x
+        self.deadzone_y_val = y
+
+    # --- FUNGSI BARU UNTUK UPDATE JARAK ---
+    def update_distance(self, dist):
+        """Menerima data jarak (cm) dari Main Loop untuk ditampilkan"""
+        self.distance_val = dist
+    # --------------------------------------
+
     def process_frame(self, frame):
+        # Reset data per frame
         self.track_error_x = 0.0
         self.track_error_y = 0.0
         self.object_found = False
         
-        if self.mode == "off": return frame
-        if self.mode == "object_detection": return self._process_ssd_mobilenet(frame)
-        elif self.mode == "face_detection": return self._process_face(frame)
-        elif self.mode == "gesture_recognition": return self._process_gesture(frame)
-        elif self.mode == "color_detection": return self._process_color(frame)
-        elif self.mode == "qr_recognition": return self._process_qr(frame)
-        elif self.mode == "auto_pilot": return self._process_auto_pilot(frame)
-        return frame
+        # 1. Proses Utama sesuai Mode
+        processed_frame = frame
+        if self.mode == "off": pass
+        elif self.mode == "object_detection": processed_frame = self._process_ssd_mobilenet(frame)
+        elif self.mode == "face_detection": processed_frame = self._process_face(frame)
+        elif self.mode == "gesture_recognition": processed_frame = self._process_gesture(frame)
+        elif self.mode == "color_detection": processed_frame = self._process_color(frame)
+        elif self.mode == "qr_recognition": processed_frame = self._process_qr(frame)
+        elif self.mode == "auto_pilot": processed_frame = self._process_auto_pilot(frame)
 
-    # --- REVISI: COLOR DETECTION (SUPPORT "ALL") ---
+        # 2. Gambar Overlay Deadzone (Jika Aktif)
+        if self.show_deadzone:
+            h, w, _ = processed_frame.shape
+            cx, cy = w // 2, h // 2
+            
+            # Hitung ukuran kotak
+            span_x = int(w * self.deadzone_x_val)
+            span_y = int(h * self.deadzone_y_val)
+            
+            pt1 = (cx - span_x, cy - span_y)
+            pt2 = (cx + span_x, cy + span_y)
+            
+            # Gambar Kotak Cyan (Biru Muda)
+            cv2.rectangle(processed_frame, pt1, pt2, (255, 255, 0), 2)
+            
+            # Gambar Crosshair Merah Kecil di Tengah
+            cv2.line(processed_frame, (cx - 10, cy), (cx + 10, cy), (0, 0, 255), 1)
+            cv2.line(processed_frame, (cx, cy - 10), (cx, cy + 10), (0, 0, 255), 1)
+
+        # 3. Overlay Distance (BARU - Pojok Kiri Atas)
+        if self.distance_val is not None:
+            # Tentukan Warna: Hijau jika aman (>25), Merah jika bahaya (<25)
+            color = (0, 255, 0) if self.distance_val > 25 else (0, 0, 255)
+            text = f"DIST: {self.distance_val:.1f} cm"
+            
+            # Background Hitam Transparan (Agar tulisan terbaca)
+            cv2.rectangle(processed_frame, (5, 5), (220, 40), (0, 0, 0), -1) 
+            # Tulisan
+            cv2.putText(processed_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+        return processed_frame
+
+    # --- LOGIKA MODUL AI ---
+
     def _process_color(self, frame):
-        # Jika NONE = Standby (Hitam/Teks)
         if self.target_color == "none":
             cv2.putText(frame, "SELECT COLOR", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             return frame
@@ -102,12 +162,9 @@ class AIProcessor:
         kernel = np.ones((5,5), "uint8")
         max_area = 0
         best_contour = None
-        target_bgr = (255, 255, 255)
-
+        
         for color in color_definitions:
-            # --- LOGIKA FILTER BARU ---
-            # Jika target bukan "all" DAN label tidak cocok, skip.
-            # Artinya: Jika target "all", SEMUA warna akan diproses.
+            # Filter warna (Skip jika bukan target & target bukan "all")
             if self.target_color != "all" and color["label"] != self.target_color:
                 continue 
 
@@ -119,21 +176,14 @@ class AIProcessor:
                 area = cv2.contourArea(contour)
                 if area > 800:
                     x, y, w, h = cv2.boundingRect(contour)
-                    
-                    # Visualisasi Kotak (Untuk semua warna yang lolos filter)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), color["bgr"], 2)
-                    
-                    # Tambahkan Label Warna
                     cv2.putText(frame, color["label"].upper(), (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color["bgr"], 2)
                     
-                    # Logic Locking (Hanya berguna untuk tracking)
                     if area > max_area:
                         max_area = area
                         best_contour = contour
-                        target_bgr = color["bgr"]
         
-        # Jika ada objek dan kita sedang tidak mode "all" (artinya mode tracking spesifik),
-        # Hitung error untuk locking servo
+        # Hitung Error untuk Tracking Servo
         if best_contour is not None:
             x, y, w, h = cv2.boundingRect(best_contour)
             h_img, w_img, _ = frame.shape
@@ -147,7 +197,6 @@ class AIProcessor:
 
         return frame
 
-    # ... (SISA KODE SAMA: face, gesture, qr, ssd, auto_pilot JANGAN DIHAPUS) ...
     def _process_face(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.face_detector.process(rgb)
@@ -194,8 +243,10 @@ class AIProcessor:
             for hand_landmarks, hand_info in zip(res.multi_hand_landmarks, res.multi_handedness):
                 self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 fingers = []
+                # Jempol
                 if hand_landmarks.landmark[4].x < hand_landmarks.landmark[3].x: fingers.append(1)
                 else: fingers.append(0)
+                # 4 Jari
                 for id in [8, 12, 16, 20]:
                     if hand_landmarks.landmark[id].y < hand_landmarks.landmark[id - 2].y: fingers.append(1)
                     else: fingers.append(0)

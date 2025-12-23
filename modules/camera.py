@@ -21,7 +21,7 @@ class VideoStreamer:
             self.source = self._download_sim(self.source)
 
     def _download_sim(self, url):
-        path = "assets/sim.mp4"
+        path = "assets/colour.mp4"
         if not os.path.exists("assets"):
             os.makedirs("assets")
 

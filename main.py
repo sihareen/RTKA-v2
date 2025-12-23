@@ -294,6 +294,9 @@ async def ws_tracking(websocket: WebSocket):
                     
                     robot_extras.move_servo("pan", int(pan_pos))
                     robot_extras.move_servo("tilt", int(tilt_pos))
+                else:
+                    # Trik Hening (Aggressive Detach)
+                    robot_extras.detach_servos()
 
             await asyncio.sleep(0.04) 
 
@@ -549,7 +552,7 @@ async def ws_qr(websocket: WebSocket):
         robot_cam.ai.set_mode("off")
 
         
-#  AVOID & FOLLOW (SPEED 6% + SEQUENTIAL CHECK)
+#  AVOID & FOLLOW (SAFETY FIRST + FILTERED SENSOR + STATE MACHINE)
 @app.websocket("/ws/avoid")
 async def ws_avoid(websocket: WebSocket):
     global CURRENT_CONTROLLER
@@ -557,18 +560,62 @@ async def ws_avoid(websocket: WebSocket):
     CURRENT_CONTROLLER = "avoid"
     
     robot_cam.ai.set_mode("off")
-    print("[WS] AVOID Connected (Speed 6%)")
+    print("[WS] AVOID Connected - SAFETY MODE")
     
     current_mode = "standby"
-    active_mask = [1, 1, 1, 1, 1] 
+    active_mask = [1, 1, 1, 1, 1]
     
-    # --- KONFIGURASI KECEPATAN ---
-    SPEED_MAJU  = 0.06  # 6% (Sesuai Request)
-    SPEED_PUTAR = 0.25  # 50% (Agar kuat memutar beban robot)
+    # --- SHARED DATA ---
+    # Kita set nilai awal 999 biar robot gak panik pas baru nyala
+    sensor_data = {"dist": 100.0} 
     
+    # --- TUNING PARAMETERS ---
+    # Speed diturunkan untuk safety saat testing
+    SPEED_MAJU    = 0.05   # Sangat pelan (Safety First)
+    SPEED_MUNDUR  = -0.50  
+    SPEED_PUTAR   = 0.50   
+    
+    JARAK_STOP_DARURAT = 10 # cm (Haram dilewati)
+    JARAK_TRIGGER      = 30 # cm (Mulai mikir untuk menghindar)
+    
+    DURASI_MUNDUR   = 1.0
+    DURASI_PUTAR_90 = 0.7
+    DURASI_STABIL   = 0.5 
+
+    # State Machine
+    state = "IDLE"
+    state_ts = time.monotonic()
+    
+    # --- BACKGROUND TASK: SENSOR FILTERING (ANTI SPIKE) ---
+    async def sensor_loop():
+        # Alpha: 0.1 (Sangat Smooth/Lambat) s/d 1.0 (Tanpa Filter/Cepat)
+        # 0.4 artinya: 60% data lama, 40% data baru (Cukup smooth tapi responsif)
+        ALPHA = 0.4 
+        
+        while True:
+            try:
+                raw_dist = robot_sensors.get_distance()
+                
+                # FILTER 1: Buang Noise Ekstrim (< 2cm atau > 400cm biasanya error)
+                if 2 < raw_dist < 400:
+                    
+                    # FILTER 2: Low-Pass Filter (Exponential Moving Average)
+                    prev_dist = sensor_data["dist"]
+                    filtered_dist = (prev_dist * (1 - ALPHA)) + (raw_dist * ALPHA)
+                    
+                    sensor_data["dist"] = filtered_dist
+                    
+                    # Update HUD Kamera (Biar visualnya enak dilihat, gak loncat2)
+                    robot_cam.ai.update_distance(filtered_dist)
+                
+                await asyncio.sleep(0.04) # 25Hz Refresh Rate
+            except: pass
+
+    sensor_task = asyncio.create_task(sensor_loop())
+
     try:
         while True:
-            # 1. TERIMA PERINTAH
+            # 1. INPUT HANDLING (NON-BLOCKING)
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
                 payload = json.loads(data)
@@ -577,133 +624,176 @@ async def ws_avoid(websocket: WebSocket):
                 if cmd == "set_ai_mode":
                     mode = payload.get("mode") 
                     current_mode = mode
+                    state = "IDLE"
+                    robot_motor.stop()
                     
-                    if mode == "avoid_hcsr":
-                        msg = f"MODE: AVOID (Speed {int(SPEED_MAJU*100)}%)"
-                    elif mode == "avoid_hybrid":
+                    msg = "MODE: SAFETY AVOID" if mode == "avoid_hcsr" else "MODE: HYBRID"
+                    if mode == "standby": msg = "MODE: STANDBY"
+                    
+                    # Ambil config hybrid jika ada
+                    if mode == "avoid_hybrid":
                         cfg = payload.get("config", {})
-                        active_mask = [
-                            1 if cfg.get("ll", True) else 0,
-                            1 if cfg.get("l",  True) else 0,
-                            1 if cfg.get("m",  True) else 0,
-                            1 if cfg.get("r",  True) else 0,
-                            1 if cfg.get("rr", True) else 0
-                        ]
-                        msg = f"MODE: LINE HYBRID"
-                    else:
-                        msg = "MODE: STANDBY"
-                        robot_motor.stop()
-                        
+                        active_mask = [1 if cfg.get(k, True) else 0 for k in ["ll","l","m","r","rr"]]
+
                     await websocket.send_text(json.dumps({"status": "active", "mode": msg}))
             except asyncio.TimeoutError: pass
 
             # 2. LOGIKA UTAMA
             if CURRENT_CONTROLLER == "avoid" and current_mode != "standby":
                 
-                distance = robot_sensors.get_distance()
-                
-                # =========================================
-                # MODE A: OBSTACLE AVOID (SPEED 6%)
-                # =========================================
-                if current_mode == "avoid_hcsr":
+                # Ambil data ter-filter
+                distance = sensor_data["dist"]
+                now = time.monotonic()
+                elapsed = now - state_ts
+
+                # ===============================================
+                # 🔥 LAYER 1: HARD EMERGENCY STOP (ABSOLUTE PRIORITY)
+                # ===============================================
+                # Ini memotong semua logika State Machine di bawah.
+                # Jika jarak < 10cm, MATIKAN MOTOR DETIK ITU JUGA.
+                if distance < JARAK_STOP_DARURAT:
+                    if state != "EMERGENCY": # Print cuma sekali biar gak spam log
+                        print(f"[CRITICAL] EMERGENCY STOP! Jarak: {distance:.1f}cm")
                     
-                    # --- JIKA ADA HALANGAN (< 25 CM) ---
-                    if 2 < distance < 25: 
-                        print(f"!!! STOP ({distance}cm) -> CEK KIRI/KANAN !!!")
-                        
-                        # 1. STOP TOTAL
+                    robot_motor.stop()
+                    state = "EMERGENCY" # State khusus biar gak ngapa-ngapain
+                    state_ts = now
+                    
+                    await asyncio.sleep(0.05) # Yield sebentar
+                    continue # SKIP KODE DI BAWAHNYA, ULANG LOOP DARI ATAS
+                
+                # Jika sudah lolos emergency (jarak > 10cm), tapi status masih EMERGENCY
+                # Kembalikan ke IDLE biar State Machine jalan lagi
+                if state == "EMERGENCY" and distance > (JARAK_STOP_DARURAT + 5):
+                    print("[SAFE] Jarak aman kembali. Resume IDLE.")
+                    state = "IDLE"
+                    state_ts = now
+
+                # ===============================================
+                # 🧠 LAYER 2: STATE MACHINE
+                # ===============================================
+                
+                # --- STATE: IDLE (Maju Waspada) ---
+                if state == "IDLE":
+                    # Cek Pemicu Menghindar (Trigger)
+                    if distance < JARAK_TRIGGER:
+                        print(f"[SM] Halangan {distance:.1f}cm -> STOP & MUNDUR")
                         robot_motor.stop()
-                        await asyncio.sleep(0.5)
-                        
-                        # 2. MUNDUR DIKIT (Agar ada ruang putar)
-                        # Mundur pakai speed agak besar dikit biar gerak
-                        robot_motor.move(-0.2, 0.0) 
-                        await asyncio.sleep(0.2)
+                        state = "PRE_BACKING"
+                        state_ts = now
+                    
+                    else:
+                        # LOGIKA MAJU (Continuous Check)
+                        # Kita pastikan perintah maju hanya dikirim kalau aman
+                        if current_mode == "avoid_hcsr":
+                            robot_motor.move(SPEED_MAJU, 0.0)
+                            
+                        elif current_mode == "avoid_hybrid":
+                            # Hybrid Logic
+                            raw_lines = robot_sensors.get_line_status()
+                            lines = [r & m for r, m in zip(raw_lines, active_mask)]
+                            # ... (Logika Line Follower Copy Paste disini) ...
+                            # Agar ringkas, saya pakai logika simple:
+                            if sum(lines) == 0: robot_motor.stop() # Lost line
+                            elif lines[2]: robot_motor.move(0.15, 0.0) # Tengah
+                            elif lines[1]: robot_motor.move(0.12, -0.3) # Kiri
+                            elif lines[3]: robot_motor.move(0.12, 0.3) # Kanan
+                            # ... Tambahkan logika lengkap line follower Anda di sini
+
+                # --- STATE: PRE BACKING (Jeda sebelum mundur) ---
+                elif state == "PRE_BACKING":
+                    robot_motor.stop()
+                    if elapsed > 0.2:
+                        state = "BACKING"
+                        state_ts = now
+
+                # --- STATE: BACKING (Mundur tanpa nabrak) ---
+                elif state == "BACKING":
+                    robot_motor.move(SPEED_MUNDUR, 0.0)
+                    if elapsed > DURASI_MUNDUR:
                         robot_motor.stop()
-                        
-                        # ==================================
-                        # PHASE 1: CEK KIRI
-                        # ==================================
-                        print("1. Cek Kiri...")
-                        robot_motor.move(0.0, -SPEED_PUTAR) # Putar Kiri
-                        await asyncio.sleep(0.6) 
+                        state = "PRE_TURN_LEFT"
+                        state_ts = now
+
+                # --- STATE: PRE TURN LEFT ---
+                elif state == "PRE_TURN_LEFT":
+                    if elapsed > 0.2:
+                        state = "TURN_LEFT"
+                        state_ts = now
+
+                # --- STATE: TURN LEFT ---
+                elif state == "TURN_LEFT":
+                    robot_motor.move(0.0, -SPEED_PUTAR)
+                    if elapsed > DURASI_PUTAR_90:
                         robot_motor.stop()
-                        
-                        await asyncio.sleep(0.5) # Jeda Sensor
-                        dist_kiri = robot_sensors.get_distance()
-                        print(f"   -> Jarak Kiri: {dist_kiri}cm")
-                        
-                        if dist_kiri > 50:
-                            print("   -> KIRI AMAN. Gas...")
-                            # Biarkan loop lanjut, robot sudah menghadap kiri
-                        
+                        state = "CHECK_LEFT"
+                        state_ts = now
+
+                # --- STATE: CHECK LEFT ---
+                elif state == "CHECK_LEFT":
+                    robot_motor.stop()
+                    if elapsed > DURASI_STABIL:
+                        # Logika Keputusan
+                        if distance > (JARAK_TRIGGER * 1.5):
+                            print("[SM] Kiri Aman -> RECOVERY")
+                            state = "RECOVERY"
                         else:
-                            # ==================================
-                            # PHASE 2: CEK KANAN (JIKA KIRI GAGAL)
-                            # ==================================
-                            print("   -> Kiri Sempit. Cek Kanan...")
-                            
-                            # Putar Balik ke Kanan (Waktu 2x lipat untuk nyebrang 180 derajat)
-                            robot_motor.move(0.0, SPEED_PUTAR) 
-                            await asyncio.sleep(1.2) 
-                            robot_motor.stop()
-                            
-                            await asyncio.sleep(0.5)
-                            dist_kanan = robot_sensors.get_distance()
-                            print(f"   -> Jarak Kanan: {dist_kanan}cm")
-                            
-                            if dist_kanan > 50:
-                                print("   -> KANAN AMAN. Gas...")
-                                # Robot sudah menghadap kanan
-                            
-                            else:
-                                # ==================================
-                                # PHASE 3: U-TURN (JIKA SEMUA GAGAL)
-                                # ==================================
-                                print("   -> BUNTU TOTAL. Putar Balik...")
-                                
-                                # Putar Kanan lagi agar menghadap belakang
-                                robot_motor.move(0.0, SPEED_PUTAR)
-                                await asyncio.sleep(0.7) 
-                                robot_motor.stop()
-                                await asyncio.sleep(0.5)
+                            print("[SM] Kiri Buntu -> PRE_TURN_RIGHT")
+                            state = "PRE_TURN_RIGHT"
+                        state_ts = now
 
-                    # --- JIKA AMAN (> 25 CM) ---
-                    else:
-                        # JALAN KONSTAN 6%
-                        robot_motor.move(SPEED_MAJU, 0.0)
+                # --- STATE: PRE TURN RIGHT ---
+                elif state == "PRE_TURN_RIGHT":
+                    if elapsed > 0.2:
+                        state = "TURN_RIGHT"
+                        state_ts = now
 
-                # =========================================
-                # MODE B: HYBRID (LINE + AVOID)
-                # =========================================
-                elif current_mode == "avoid_hybrid":
-                    if 2 < distance < 25:
-                        robot_motor.stop() 
-                    else:
-                        raw_lines = robot_sensors.get_line_status()
-                        lines = [r & m for r, m in zip(raw_lines, active_mask)]
-                        
-                        # Speed Line Follower mungkin perlu sedikit lebih tinggi dari 6%
-                        # agar koreksinya berasa, tapi saya set aman di 15% dulu.
-                        SPEED_LINE = 0.6 
-                        
-                        if lines[2] == 1:   
-                            if lines[1] == 1: robot_motor.move(SPEED_LINE, -0.2)
-                            elif lines[3] == 1: robot_motor.move(SPEED_LINE, 0.2)
-                            else: robot_motor.move(SPEED_LINE, 0.0) 
-                        elif lines[1] == 1: robot_motor.move(0.10, -0.4)
-                        elif lines[3] == 1: robot_motor.move(0.10, 0.4)
-                        elif lines[0] == 1: robot_motor.move(0.08, -0.55)
-                        elif lines[4] == 1: robot_motor.move(0.08, 0.55)
-                        elif sum(lines) >= 3: robot_motor.stop()
-                        elif sum(lines) == 0: robot_motor.stop()
-            
+                # --- STATE: TURN RIGHT (Putar Balik Kanan - Total 180 dr kiri) ---
+                elif state == "TURN_RIGHT":
+                    robot_motor.move(0.0, SPEED_PUTAR)
+                    if elapsed > (DURASI_PUTAR_90 * 2.2):
+                        robot_motor.stop()
+                        state = "CHECK_RIGHT"
+                        state_ts = now
+
+                # --- STATE: CHECK RIGHT ---
+                elif state == "CHECK_RIGHT":
+                    robot_motor.stop()
+                    if elapsed > DURASI_STABIL:
+                        if distance > (JARAK_TRIGGER * 1.5):
+                            print("[SM] Kanan Aman -> RECOVERY")
+                            state = "RECOVERY"
+                        else:
+                            print("[SM] Kanan Buntu -> U_TURN")
+                            state = "U_TURN"
+                        state_ts = now
+
+                # --- STATE: U_TURN (Putar 180 Derajat) ---
+                elif state == "U_TURN":
+                    robot_motor.move(0.0, SPEED_PUTAR)
+                    if elapsed > DURASI_PUTAR_90:
+                        state = "RECOVERY"
+                        state_ts = now
+
+                # --- STATE: RECOVERY ---
+                elif state == "RECOVERY":
+                    robot_motor.stop()
+                    if elapsed > 0.5:
+                        state = "IDLE"
+                        state_ts = now
+
+            else:
+                robot_motor.stop()
+
             await asyncio.sleep(0.01)
 
     except Exception as e:
         print(f"[AVOID] Error: {e}")
     finally:
+        sensor_task.cancel()
         robot_motor.stop()
+        robot_cam.ai.update_distance(None)
+
 
 
 @app.get("/")

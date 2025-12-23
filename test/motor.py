@@ -1,32 +1,28 @@
-# Simpan sebagai: final_test.py
 from gpiozero import OutputDevice
-from time import sleep
+import time
 
-# Definisi sesuai instruksi saya barusan
-motors = {
-    "Kiri Depan": (17, 27),
-    "Kiri Belakang": (22, 23),
-    "Kanan Depan": (24, 25),
-    "Kanan Belakang": (5, 6)
-}
+# Definisi Pin Mundur Depan (Sesuai Config Anda)
+PIN_FL_BWD = 27
+PIN_FR_BWD = 25
 
-print("--- FINAL TEST ---")
+print("--- TES MUNDUR MOTOR DEPAN ---")
+print(f"Menyalakan GPIO {PIN_FL_BWD} (Kiri Depan) & {PIN_FR_BWD} (Kanan Depan)...")
+
 try:
-    for nama, (pinA, pinB) in motors.items():
-        print(f"Tes {nama}...", end=" ")
-        maju = OutputDevice(pinA)
-        mundur = OutputDevice(pinB)
-        
-        maju.on()
-        sleep(1)
-        maju.off()
-        
-        maju.close()
-        mundur.close()
-        print("OK")
-        sleep(0.5)
-        
-    print("Selesai. Jika ada roda terbalik (mundur), cukup tukar angka Pin di config.py")
+    # Kita pakai OutputDevice biar murni High/Low tanpa PWM
+    motor_kiri_mundur = OutputDevice(PIN_FL_BWD)
+    motor_kanan_mundur = OutputDevice(PIN_FR_BWD)
+    
+    # Nyalakan!
+    motor_kiri_mundur.on()
+    motor_kanan_mundur.on()
+    
+    print("MUNDUR AKTIF! (Tahan 3 detik)")
+    time.sleep(3)
+    
+    motor_kiri_mundur.off()
+    motor_kanan_mundur.off()
+    print("BERHENTI.")
 
 except Exception as e:
     print(f"Error: {e}")
