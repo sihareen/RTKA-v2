@@ -1,34 +1,4 @@
 {
-    "motor": {
-        "fl_fwd": 17,
-        "fl_bwd": 27,
-        "rl_fwd": 22,
-        "rl_bwd": 23,
-        "fr_fwd": 24,
-        "fr_bwd": 25,
-        "rr_fwd": 5,
-        "rr_bwd": 6
-    },
-    "servo": {
-        "pan_pin": 12,
-        "tilt_pin": 13
-    },
-    "ultrasonic": {
-        "trig": 26,
-        "echo": 20
-    },
-    "line": {
-        "ll": 4,
-        "l": 14,
-        "m": 15,
-        "r": 18,
-        "rr": 21
-    },
-    "led": {
-        "r": 7,
-        "y": 8,
-        "g": 9
-    },
     "buzzer": {
         "pin": 19
     }
