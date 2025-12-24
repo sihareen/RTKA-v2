@@ -41,6 +41,10 @@ PIN_LINE_L = 14
 PIN_LINE_M = 15
 PIN_LINE_R = 18
 PIN_LINE_RR = 21
+# Set ke 0 atau None jika tidak ingin dipakai
+PIN_BFD_NEAR = 11  # Sensor Proximity (IR Depan)
+PIN_BFD_CLAP = 19  # Sensor Tabrak (Switch Fisik)
+
 
 PIN_LED_R = 7   # Red
 PIN_LED_Y = 8   # Yellow

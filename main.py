@@ -294,6 +294,9 @@ async def ws_tracking(websocket: WebSocket):
                     
                     robot_extras.move_servo("pan", int(pan_pos))
                     robot_extras.move_servo("tilt", int(tilt_pos))
+                else:
+                    # Trik Hening (Aggressive Detach)
+                    robot_extras.detach_servos()
 
             await asyncio.sleep(0.04) 
 
@@ -549,7 +552,8 @@ async def ws_qr(websocket: WebSocket):
         robot_cam.ai.set_mode("off")
 
         
-#  AVOID & FOLLOW (SPEED 6% + SEQUENTIAL CHECK)
+        
+#  AVOID & FOLLOW (FINAL: BREAK ZONE + 0.5s FAILSAFE)
 @app.websocket("/ws/avoid")
 async def ws_avoid(websocket: WebSocket):
     global CURRENT_CONTROLLER
@@ -557,153 +561,615 @@ async def ws_avoid(websocket: WebSocket):
     CURRENT_CONTROLLER = "avoid"
     
     robot_cam.ai.set_mode("off")
-    print("[WS] AVOID Connected (Speed 6%)")
+    print("[WS] AVOID Connected - FINAL MODE")
     
-    current_mode = "standby"
-    active_mask = [1, 1, 1, 1, 1] 
+    # --- SHARED DATA ---
+    sensor_data = {"dist": 100.0, "panic": False}
     
-    # --- KONFIGURASI KECEPATAN ---
-    SPEED_MAJU  = 0.06  # 6% (Sesuai Request)
-    SPEED_PUTAR = 0.25  # 50% (Agar kuat memutar beban robot)
+    # --- CONFIG ---
+    SPEED_MAJU    = 0.05
+    SPEED_MUNDUR  = -0.60 # Speed mundur agak kencang biar 0.5s kerasa
+    SPEED_PUTAR   = 0.40
     
+    ZONA_KRITIS   = 10  # < 10cm: WAJIB MUNDUR
+    ZONA_BREAK    = 15  # 10-15cm: STOP & SCAN
+    SYARAT_JALAN  = 30  # > 30cm: AMAN
+    
+    # [UBAH DISINI] Maksimal mundur hanya 0.5 detik
+    # Jika sensor error atau belum sampai 15cm pun, tetap berhenti.
+    MAX_RETREAT_TIME = 0.5  
+    
+    TIME_SCAN_TURN = 0.8 
+    TIME_STABIL    = 0.5
+
+    state = "FORWARD"
+    retreat_locked = False
+    
+    state_ts = time.monotonic()
+    dist_left = 0
+    dist_right = 0
+    
+    # --- SENSOR TASK ---
+    async def sensor_loop():
+        ALPHA = 0.6 
+        while True:
+            try:
+                raw = robot_sensors.get_distance()
+                if 0 <= raw < 400: 
+                    sensor_data["dist"] = (sensor_data["dist"] * (1-ALPHA)) + (raw * ALPHA)
+                    robot_cam.ai.update_distance(sensor_data["dist"])
+                
+                sensor_data["panic"] = robot_sensors.check_panic()
+                await asyncio.sleep(0.04)
+            except: pass
+
+    sensor_task = asyncio.create_task(sensor_loop())
+
     try:
         while True:
-            # 1. TERIMA PERINTAH
+            # 1. INPUT HANDLING
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
-                payload = json.loads(data)
-                cmd = payload.get("cmd")
-                
-                if cmd == "set_ai_mode":
-                    mode = payload.get("mode") 
-                    current_mode = mode
-                    
-                    if mode == "avoid_hcsr":
-                        msg = f"MODE: AVOID (Speed {int(SPEED_MAJU*100)}%)"
-                    elif mode == "avoid_hybrid":
-                        cfg = payload.get("config", {})
-                        active_mask = [
-                            1 if cfg.get("ll", True) else 0,
-                            1 if cfg.get("l",  True) else 0,
-                            1 if cfg.get("m",  True) else 0,
-                            1 if cfg.get("r",  True) else 0,
-                            1 if cfg.get("rr", True) else 0
-                        ]
-                        msg = f"MODE: LINE HYBRID"
-                    else:
-                        msg = "MODE: STANDBY"
-                        robot_motor.stop()
-                        
-                    await websocket.send_text(json.dumps({"status": "active", "mode": msg}))
+                if json.loads(data).get("cmd") == "set_ai_mode":
+                    state = "FORWARD"
+                    retreat_locked = False
+                    robot_motor.stop()
             except asyncio.TimeoutError: pass
 
-            # 2. LOGIKA UTAMA
-            if CURRENT_CONTROLLER == "avoid" and current_mode != "standby":
+            if CURRENT_CONTROLLER == "avoid":
                 
-                distance = robot_sensors.get_distance()
-                
-                # =========================================
-                # MODE A: OBSTACLE AVOID (SPEED 6%)
-                # =========================================
-                if current_mode == "avoid_hcsr":
-                    
-                    # --- JIKA ADA HALANGAN (< 25 CM) ---
-                    if 2 < distance < 25: 
-                        print(f"!!! STOP ({distance}cm) -> CEK KIRI/KANAN !!!")
-                        
-                        # 1. STOP TOTAL
-                        robot_motor.stop()
-                        await asyncio.sleep(0.5)
-                        
-                        # 2. MUNDUR DIKIT (Agar ada ruang putar)
-                        # Mundur pakai speed agak besar dikit biar gerak
-                        robot_motor.move(-0.2, 0.0) 
-                        await asyncio.sleep(0.2)
-                        robot_motor.stop()
-                        
-                        # ==================================
-                        # PHASE 1: CEK KIRI
-                        # ==================================
-                        print("1. Cek Kiri...")
-                        robot_motor.move(0.0, -SPEED_PUTAR) # Putar Kiri
-                        await asyncio.sleep(0.6) 
-                        robot_motor.stop()
-                        
-                        await asyncio.sleep(0.5) # Jeda Sensor
-                        dist_kiri = robot_sensors.get_distance()
-                        print(f"   -> Jarak Kiri: {dist_kiri}cm")
-                        
-                        if dist_kiri > 50:
-                            print("   -> KIRI AMAN. Gas...")
-                            # Biarkan loop lanjut, robot sudah menghadap kiri
-                        
-                        else:
-                            # ==================================
-                            # PHASE 2: CEK KANAN (JIKA KIRI GAGAL)
-                            # ==================================
-                            print("   -> Kiri Sempit. Cek Kanan...")
-                            
-                            # Putar Balik ke Kanan (Waktu 2x lipat untuk nyebrang 180 derajat)
-                            robot_motor.move(0.0, SPEED_PUTAR) 
-                            await asyncio.sleep(1.2) 
-                            robot_motor.stop()
-                            
-                            await asyncio.sleep(0.5)
-                            dist_kanan = robot_sensors.get_distance()
-                            print(f"   -> Jarak Kanan: {dist_kanan}cm")
-                            
-                            if dist_kanan > 50:
-                                print("   -> KANAN AMAN. Gas...")
-                                # Robot sudah menghadap kanan
-                            
-                            else:
-                                # ==================================
-                                # PHASE 3: U-TURN (JIKA SEMUA GAGAL)
-                                # ==================================
-                                print("   -> BUNTU TOTAL. Putar Balik...")
-                                
-                                # Putar Kanan lagi agar menghadap belakang
-                                robot_motor.move(0.0, SPEED_PUTAR)
-                                await asyncio.sleep(0.7) 
-                                robot_motor.stop()
-                                await asyncio.sleep(0.5)
+                distance = sensor_data["dist"]
+                is_panic = sensor_data["panic"]
+                now = time.monotonic()
+                elapsed = now - state_ts
 
-                    # --- JIKA AMAN (> 25 CM) ---
+                # ====================================================
+                # 🔴 PRIORITAS 1: SENSOR BFD (LOCKING)
+                # ====================================================
+                if is_panic and not retreat_locked:
+                    print("[PRIORITY] BFD TRIGGERED! Locking Retreat.")
+                    robot_motor.stop()
+                    await asyncio.sleep(0.1)
+                    retreat_locked = True
+                    state = "RETREAT"
+                    state_ts = now 
+                    continue 
+
+                # ====================================================
+                # ⚙️ STATE MACHINE
+                # ====================================================
+
+                # 1. FORWARD
+                if state == "FORWARD":
+                    if distance < ZONA_KRITIS:
+                        if not retreat_locked:
+                            # print(f"[FWD] Kritis {distance:.1f}cm. Mundur.") # Opsional: Disable print biar gak spam
+                            robot_motor.stop()
+                            state = "RETREAT"
+                            state_ts = now 
+                    
+                    elif distance <= ZONA_BREAK:
+                        print(f"[FWD] Break Zone {distance:.1f}cm. Stop & Scan.")
+                        robot_motor.stop()
+                        state = "SCAN_INIT" 
+                        
                     else:
-                        # JALAN KONSTAN 6%
                         robot_motor.move(SPEED_MAJU, 0.0)
 
-                # =========================================
-                # MODE B: HYBRID (LINE + AVOID)
-                # =========================================
-                elif current_mode == "avoid_hybrid":
-                    if 2 < distance < 25:
-                        robot_motor.stop() 
+                # 2. RETREAT (FAILSAFE 0.5s)
+                elif state == "RETREAT":
+                    
+                    succes_condition = distance >= ZONA_BREAK
+                    timeout_condition = elapsed > MAX_RETREAT_TIME # > 0.5 detik
+                    
+                    if succes_condition:
+                        print(f"[RETREAT] Target Tercapai ({distance:.1f}cm). Stop.")
+                        robot_motor.stop()
+                        state = "SCAN_INIT"
+                        
+                    elif timeout_condition:
+                        print(f"[RETREAT] TIMEOUT 0.5s (Jarak {distance:.1f}cm). Force Stop.")
+                        robot_motor.stop()
+                        state = "SCAN_INIT" # Langsung Scan
+                        
                     else:
-                        raw_lines = robot_sensors.get_line_status()
-                        lines = [r & m for r, m in zip(raw_lines, active_mask)]
+                        robot_motor.move(SPEED_MUNDUR, 0.0)
+
+                # 3. SCANNING SEQUENCE
+                elif state == "SCAN_INIT":
+                    state = "SCAN_LEFT_MOVE"
+                    state_ts = now
+                
+                elif state == "SCAN_LEFT_MOVE":
+                    robot_motor.move(0.0, -SPEED_PUTAR)
+                    if elapsed > TIME_SCAN_TURN:
+                        robot_motor.stop()
+                        state = "SCAN_LEFT_READ"
+                        state_ts = now
+                
+                elif state == "SCAN_LEFT_READ":
+                    if elapsed > TIME_STABIL:
+                        dist_left = distance
+                        print(f"[SCAN] Kiri: {dist_left:.1f} cm")
+                        state = "SCAN_RIGHT_MOVE"
+                        state_ts = now
+
+                elif state == "SCAN_RIGHT_MOVE":
+                    robot_motor.move(0.0, SPEED_PUTAR)
+                    if elapsed > (TIME_SCAN_TURN * 2.2):
+                        robot_motor.stop()
+                        state = "SCAN_RIGHT_READ"
+                        state_ts = now
+
+                elif state == "SCAN_RIGHT_READ":
+                    if elapsed > TIME_STABIL:
+                        dist_right = distance
+                        print(f"[SCAN] Kanan: {dist_right:.1f} cm")
                         
-                        # Speed Line Follower mungkin perlu sedikit lebih tinggi dari 6%
-                        # agar koreksinya berasa, tapi saya set aman di 15% dulu.
-                        SPEED_LINE = 0.6 
+                        target_dir = "NONE"
+                        if dist_left >= SYARAT_JALAN and dist_right >= SYARAT_JALAN:
+                            target_dir = "LEFT" if dist_left > dist_right else "RIGHT"
+                        elif dist_left >= SYARAT_JALAN:
+                            target_dir = "LEFT"
+                        elif dist_right >= SYARAT_JALAN:
+                            target_dir = "RIGHT"
                         
-                        if lines[2] == 1:   
-                            if lines[1] == 1: robot_motor.move(SPEED_LINE, -0.2)
-                            elif lines[3] == 1: robot_motor.move(SPEED_LINE, 0.2)
-                            else: robot_motor.move(SPEED_LINE, 0.0) 
-                        elif lines[1] == 1: robot_motor.move(0.10, -0.4)
-                        elif lines[3] == 1: robot_motor.move(0.10, 0.4)
-                        elif lines[0] == 1: robot_motor.move(0.08, -0.55)
-                        elif lines[4] == 1: robot_motor.move(0.08, 0.55)
-                        elif sum(lines) >= 3: robot_motor.stop()
-                        elif sum(lines) == 0: robot_motor.stop()
+                        if target_dir != "NONE":
+                            print(f"[DECIDE] {target_dir}")
+                            state = "TURN_TO_LEFT" if target_dir == "LEFT" else "TURN_TO_RIGHT"
+                        else:
+                            print("[DECIDE] Buntu.")
+                            state = "DEAD_END"
+                        
+                        state_ts = now
+
+                # 4. TURN & EXECUTE
+                elif state == "TURN_TO_LEFT":
+                    robot_motor.move(0.0, -SPEED_PUTAR)
+                    if elapsed > (TIME_SCAN_TURN * 2.2): 
+                        robot_motor.stop()
+                        state = "RESET_AND_GO"
+                
+                elif state == "TURN_TO_RIGHT":
+                    robot_motor.stop()
+                    state = "RESET_AND_GO"
+
+                # 5. RESET LOCK
+                elif state == "RESET_AND_GO":
+                    retreat_locked = False 
+                    state = "FORWARD"
+
+                # 6. DEAD END
+                elif state == "DEAD_END":
+                    robot_extras.set_buzzer("on")
+                    if elapsed > 3.0:
+                        robot_extras.set_buzzer("off")
+                        state = "SCAN_INIT" 
+                        state_ts = now
+
+            else:
+                robot_motor.stop()
             
             await asyncio.sleep(0.01)
 
     except Exception as e:
         print(f"[AVOID] Error: {e}")
     finally:
+        sensor_task.cancel()
         robot_motor.stop()
+        robot_cam.ai.update_distance(None)
+    global CURRENT_CONTROLLER
+    await websocket.accept()
+    CURRENT_CONTROLLER = "avoid"
+    
+    robot_cam.ai.set_mode("off")
+    print("[WS] AVOID Connected - FAILSAFE MODE")
+    
+    # --- SHARED DATA ---
+    sensor_data = {"dist": 100.0, "panic": False}
+    
+    # --- CONFIG ---
+    SPEED_MAJU    = 0.05
+    SPEED_MUNDUR  = -0.50
+    SPEED_PUTAR   = 0.40
+    
+    ZONA_KRITIS   = 10  
+    ZONA_BREAK    = 15  
+    SYARAT_JALAN  = 30  
+    
+    # [BARU] Batas waktu maksimal mundur (Failsafe jika sensor error)
+    MAX_RETREAT_TIME = 2.0  # Maksimal mundur 2 detik, apapun yang terjadi
+    
+    TIME_SCAN_TURN = 0.8 
+    TIME_STABIL    = 0.5
+
+    state = "FORWARD"
+    retreat_locked = False
+    
+    state_ts = time.monotonic()
+    dist_left = 0
+    dist_right = 0
+    
+    # --- SENSOR TASK ---
+    async def sensor_loop():
+        ALPHA = 0.6 
+        while True:
+            try:
+                raw = robot_sensors.get_distance()
+                # Terima 0 sebagai valid (jarak sangat dekat/error) untuk safety
+                if 0 <= raw < 400: 
+                    sensor_data["dist"] = (sensor_data["dist"] * (1-ALPHA)) + (raw * ALPHA)
+                    robot_cam.ai.update_distance(sensor_data["dist"])
+                
+                sensor_data["panic"] = robot_sensors.check_panic()
+                await asyncio.sleep(0.04)
+            except: pass
+
+    sensor_task = asyncio.create_task(sensor_loop())
+
+    try:
+        while True:
+            # 1. INPUT HANDLING
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
+                if json.loads(data).get("cmd") == "set_ai_mode":
+                    state = "FORWARD"
+                    retreat_locked = False
+                    robot_motor.stop()
+            except asyncio.TimeoutError: pass
+
+            if CURRENT_CONTROLLER == "avoid":
+                
+                distance = sensor_data["dist"]
+                is_panic = sensor_data["panic"]
+                now = time.monotonic()
+                elapsed = now - state_ts
+
+                # ====================================================
+                # 🔴 PRIORITAS 1: SENSOR BFD (LOCKING)
+                # ====================================================
+                if is_panic and not retreat_locked:
+                    print("[PRIORITY] BFD TRIGGERED! Locking Retreat.")
+                    robot_motor.stop()
+                    await asyncio.sleep(0.1)
+                    retreat_locked = True
+                    state = "RETREAT"
+                    state_ts = now # Reset waktu untuk timeout failsafe
+                    continue 
+
+                # ====================================================
+                # ⚙️ STATE MACHINE
+                # ====================================================
+
+                # 1. FORWARD
+                if state == "FORWARD":
+                    if distance < ZONA_KRITIS:
+                        if not retreat_locked:
+                            print(f"[FWD] Kritis {distance:.1f}cm. Mundur.")
+                            robot_motor.stop()
+                            state = "RETREAT"
+                            state_ts = now # Reset waktu
+                    
+                    elif distance <= ZONA_BREAK:
+                        print(f"[FWD] Break Zone {distance:.1f}cm. Stop & Scan.")
+                        robot_motor.stop()
+                        state = "SCAN_INIT" 
+                        
+                    else:
+                        robot_motor.move(SPEED_MAJU, 0.0)
+
+                # 2. RETREAT (DENGAN FAILSAFE)
+                elif state == "RETREAT":
+                    
+                    # SYARAT 1: Jarak sudah cukup jauh (Ideal)
+                    succes_condition = distance >= ZONA_BREAK
+                    
+                    # SYARAT 2: Timeout (Sensor Error / Stuck)
+                    # Jika sudah mundur lebih dari 2 detik tapi sensor masih bilang dekat
+                    timeout_condition = elapsed > MAX_RETREAT_TIME
+                    
+                    if succes_condition:
+                        print(f"[RETREAT] Sukses ({distance:.1f}cm). Stop.")
+                        robot_motor.stop()
+                        state = "SCAN_INIT"
+                        
+                    elif timeout_condition:
+                        print(f"[RETREAT] TIMEOUT! Sensor mungkin error ({distance:.1f}cm). Paksa Stop.")
+                        robot_motor.stop()
+                        state = "SCAN_INIT" # Tetap lanjut Scan walau sensor error
+                        
+                    else:
+                        # Jika belum target DAN belum timeout -> Lanjut mundur
+                        robot_motor.move(SPEED_MUNDUR, 0.0)
+
+                # 3. SCANNING SEQUENCE
+                elif state == "SCAN_INIT":
+                    state = "SCAN_LEFT_MOVE"
+                    state_ts = now
+                
+                elif state == "SCAN_LEFT_MOVE":
+                    robot_motor.move(0.0, -SPEED_PUTAR)
+                    if elapsed > TIME_SCAN_TURN:
+                        robot_motor.stop()
+                        state = "SCAN_LEFT_READ"
+                        state_ts = now
+                
+                elif state == "SCAN_LEFT_READ":
+                    if elapsed > TIME_STABIL:
+                        dist_left = distance
+                        print(f"[SCAN] Kiri: {dist_left:.1f} cm")
+                        state = "SCAN_RIGHT_MOVE"
+                        state_ts = now
+
+                elif state == "SCAN_RIGHT_MOVE":
+                    robot_motor.move(0.0, SPEED_PUTAR)
+                    if elapsed > (TIME_SCAN_TURN * 2.2):
+                        robot_motor.stop()
+                        state = "SCAN_RIGHT_READ"
+                        state_ts = now
+
+                elif state == "SCAN_RIGHT_READ":
+                    if elapsed > TIME_STABIL:
+                        dist_right = distance
+                        print(f"[SCAN] Kanan: {dist_right:.1f} cm")
+                        
+                        target_dir = "NONE"
+                        if dist_left >= SYARAT_JALAN and dist_right >= SYARAT_JALAN:
+                            target_dir = "LEFT" if dist_left > dist_right else "RIGHT"
+                        elif dist_left >= SYARAT_JALAN:
+                            target_dir = "LEFT"
+                        elif dist_right >= SYARAT_JALAN:
+                            target_dir = "RIGHT"
+                        
+                        if target_dir != "NONE":
+                            print(f"[DECIDE] {target_dir}")
+                            state = "TURN_TO_LEFT" if target_dir == "LEFT" else "TURN_TO_RIGHT"
+                        else:
+                            print("[DECIDE] Buntu.")
+                            state = "DEAD_END"
+                        
+                        state_ts = now
+
+                # 4. TURN & EXECUTE
+                elif state == "TURN_TO_LEFT":
+                    robot_motor.move(0.0, -SPEED_PUTAR)
+                    if elapsed > (TIME_SCAN_TURN * 2.2): 
+                        robot_motor.stop()
+                        state = "RESET_AND_GO"
+                
+                elif state == "TURN_TO_RIGHT":
+                    robot_motor.stop()
+                    state = "RESET_AND_GO"
+
+                # 5. RESET LOCK
+                elif state == "RESET_AND_GO":
+                    retreat_locked = False 
+                    state = "FORWARD"
+
+                # 6. DEAD END
+                elif state == "DEAD_END":
+                    robot_extras.set_buzzer("on")
+                    if elapsed > 3.0:
+                        robot_extras.set_buzzer("off")
+                        state = "SCAN_INIT" 
+                        state_ts = now
+
+            else:
+                robot_motor.stop()
+            
+            await asyncio.sleep(0.01)
+
+    except Exception as e:
+        print(f"[AVOID] Error: {e}")
+    finally:
+        sensor_task.cancel()
+        robot_motor.stop()
+        robot_cam.ai.update_distance(None)
+    global CURRENT_CONTROLLER
+    await websocket.accept()
+    CURRENT_CONTROLLER = "avoid"
+    
+    robot_cam.ai.set_mode("off")
+    print("[WS] AVOID Connected - BREAK ZONE LOGIC")
+    
+    # --- SHARED DATA ---
+    sensor_data = {"dist": 100.0, "panic": False}
+    
+    # --- CONFIG ---
+    SPEED_MAJU    = 0.05
+    SPEED_MUNDUR  = -0.50
+    SPEED_PUTAR   = 0.40
+    
+    # --- DEFINISI ZONA (Sesuai Request) ---
+    ZONA_KRITIS   = 10  # < 10cm: WAJIB MUNDUR
+    ZONA_BREAK    = 15  # 10-15cm: STOP & SCAN (Cari Jalan)
+    SYARAT_JALAN  = 30  # Syarat jalan dianggap lega (> 30cm)
+    
+    TIME_SCAN_TURN = 0.8 
+    TIME_STABIL    = 0.5
+
+    state = "FORWARD"
+    retreat_locked = False
+    
+    state_ts = time.monotonic()
+    dist_left = 0
+    dist_right = 0
+    
+    # --- SENSOR TASK ---
+    async def sensor_loop():
+        ALPHA = 0.6 
+        while True:
+            try:
+                raw = robot_sensors.get_distance()
+                if 2 < raw < 400:
+                    sensor_data["dist"] = (sensor_data["dist"] * (1-ALPHA)) + (raw * ALPHA)
+                    robot_cam.ai.update_distance(sensor_data["dist"])
+                
+                sensor_data["panic"] = robot_sensors.check_panic()
+                await asyncio.sleep(0.04)
+            except: pass
+
+    sensor_task = asyncio.create_task(sensor_loop())
+
+    try:
+        while True:
+            # 1. INPUT HANDLING
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
+                if json.loads(data).get("cmd") == "set_ai_mode":
+                    state = "FORWARD"
+                    retreat_locked = False
+                    robot_motor.stop()
+            except asyncio.TimeoutError: pass
+
+            if CURRENT_CONTROLLER == "avoid":
+                
+                distance = sensor_data["dist"]
+                is_panic = sensor_data["panic"]
+                now = time.monotonic()
+                elapsed = now - state_ts
+
+                # ====================================================
+                # 🔴 PRIORITAS 1: SENSOR BFD (TABRAKAN FISIK)
+                # ====================================================
+                # Jika sensor sentuh kena, override semua logika jarak
+                if is_panic and not retreat_locked:
+                    print("[PRIORITY] BFD TRIGGERED! Locking Retreat.")
+                    robot_motor.stop()
+                    await asyncio.sleep(0.1)
+                    retreat_locked = True
+                    state = "RETREAT"
+                    continue 
+
+                # ====================================================
+                # ⚙️ STATE MACHINE
+                # ====================================================
+
+                # 1. FORWARD (Logika Utama)
+                if state == "FORWARD":
+                    
+                    # KONDISI A: < 10 cm (ZONA KRITIS)
+                    if distance < ZONA_KRITIS:
+                        if not retreat_locked:
+                            print(f"[FWD] Kritis {distance:.1f}cm (<10). Mundur.")
+                            robot_motor.stop()
+                            state = "RETREAT"
+                    
+                    # KONDISI B: 10 - 15 cm (ZONA BREAK)
+                    elif distance <= ZONA_BREAK:
+                        # Robot berhenti dan mulai mencari jalan (Scan)
+                        # TIDAK PERLU MUNDUR, langsung Scan.
+                        print(f"[FWD] Break Zone {distance:.1f}cm. Stop & Scan.")
+                        robot_motor.stop()
+                        state = "SCAN_INIT" 
+                        
+                    # KONDISI C: > 15 cm (ZONA AMAN)
+                    else:
+                        robot_motor.move(SPEED_MAJU, 0.0)
+
+                # 2. RETREAT (Hanya aktif jika < 10cm atau BFD Kena)
+                elif state == "RETREAT":
+                    # Mundur sampai masuk ke batas atas Zona Break (15cm)
+                    if distance < ZONA_BREAK:
+                        robot_motor.move(SPEED_MUNDUR, 0.0)
+                    else:
+                        print(f"[RETREAT] Sudah mencapai {distance:.1f}cm (Zona Break). Stop.")
+                        robot_motor.stop()
+                        state = "SCAN_INIT" # Setelah mundur, WAJIB Scan
+
+                # 3. SCANNING SEQUENCE (Sama seperti sebelumnya)
+                
+                elif state == "SCAN_INIT":
+                    state = "SCAN_LEFT_MOVE"
+                    state_ts = now
+                
+                elif state == "SCAN_LEFT_MOVE":
+                    robot_motor.move(0.0, -SPEED_PUTAR)
+                    if elapsed > TIME_SCAN_TURN:
+                        robot_motor.stop()
+                        state = "SCAN_LEFT_READ"
+                        state_ts = now
+                
+                elif state == "SCAN_LEFT_READ":
+                    if elapsed > TIME_STABIL:
+                        dist_left = distance
+                        print(f"[SCAN] Kiri: {dist_left:.1f} cm")
+                        state = "SCAN_RIGHT_MOVE"
+                        state_ts = now
+
+                elif state == "SCAN_RIGHT_MOVE":
+                    robot_motor.move(0.0, SPEED_PUTAR)
+                    # Putar balik dari kiri ke kanan (x2.2)
+                    if elapsed > (TIME_SCAN_TURN * 2.2):
+                        robot_motor.stop()
+                        state = "SCAN_RIGHT_READ"
+                        state_ts = now
+
+                elif state == "SCAN_RIGHT_READ":
+                    if elapsed > TIME_STABIL:
+                        dist_right = distance
+                        print(f"[SCAN] Kanan: {dist_right:.1f} cm")
+                        
+                        # --- LOGIKA KEPUTUSAN ---
+                        # Cari jalan yang > 30 cm
+                        target_dir = "NONE"
+                        
+                        # Prioritas: Pilih yang > 30cm DAN paling jauh
+                        if dist_left >= SYARAT_JALAN and dist_right >= SYARAT_JALAN:
+                            target_dir = "LEFT" if dist_left > dist_right else "RIGHT"
+                        elif dist_left >= SYARAT_JALAN:
+                            target_dir = "LEFT"
+                        elif dist_right >= SYARAT_JALAN:
+                            target_dir = "RIGHT"
+                        
+                        if target_dir != "NONE":
+                            print(f"[DECIDE] Jalan ketemu: {target_dir}")
+                            if target_dir == "LEFT":
+                                state = "TURN_TO_LEFT"
+                            else:
+                                state = "TURN_TO_RIGHT"
+                        else:
+                            print("[DECIDE] Buntu (< 30cm).")
+                            state = "DEAD_END"
+                        
+                        state_ts = now
+
+                # 4. TURN & EXECUTE
+                elif state == "TURN_TO_LEFT":
+                    robot_motor.move(0.0, -SPEED_PUTAR)
+                    if elapsed > (TIME_SCAN_TURN * 2.2): 
+                        robot_motor.stop()
+                        state = "RESET_AND_GO"
+                
+                elif state == "TURN_TO_RIGHT":
+                    robot_motor.stop() # Sudah di kanan
+                    state = "RESET_AND_GO"
+
+                # 5. RESET LOCK & MAJU
+                elif state == "RESET_AND_GO":
+                    retreat_locked = False 
+                    state = "FORWARD"
+
+                # 6. DEAD END (Buzzer)
+                elif state == "DEAD_END":
+                    robot_extras.set_buzzer("on")
+                    if elapsed > 3.0:
+                        robot_extras.set_buzzer("off")
+                        # Setelah 3 detik, coba scan ulang (siapa tau jalan kebuka)
+                        state = "SCAN_INIT" 
+                        state_ts = now
+
+            else:
+                robot_motor.stop()
+            
+            await asyncio.sleep(0.01)
+
+    except Exception as e:
+        print(f"[AVOID] Error: {e}")
+    finally:
+        sensor_task.cancel()
+        robot_motor.stop()
+        robot_cam.ai.update_distance(None)
 
 
 @app.get("/")

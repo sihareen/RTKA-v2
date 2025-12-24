@@ -1,68 +1,51 @@
-from sshkeyboard import listen_keyboard
 import time
-from adafruit_servokit import ServoKit
+from gpiozero import Servo
+from time import sleep
 
-kit = ServoKit(channels=12)
+servo_angguk_pin = 13
+servo_geleng_pin = 12
 
-pan_angle = 90
-tilt_angle = 90
+TITIK_NOL_ANGGUK = 0.95
 
-release_a = False
-release_d = False
-release_w = False
-release_s = False
+rentang_angguk = 0.3
+rentang_geleng = 1.0 # Nilai ini membuat gerakan menggeleng menjadi lebih luas
 
-kit.servo[0].angle = pan_angle
-kit.servo[1].angle = tilt_angle
+servo_angguk = Servo(servo_angguk_pin, min_pulse_width=0.5/1000, max_pulse_width=2.5/1000)
+servo_geleng = Servo(servo_geleng_pin, min_pulse_width=0.5/1000, max_pulse_width=2.5/1000)
 
-def press(key):
-    global pan_angle, tilt_angle, release_a, release_d, release_w, release_s
+def gerak_halus(servo, posisi_mulai, posisi_akhir, durasi):
 
-    if key == "w":
-        release_w = False
-        while(tilt_angle > 0 and not release_w):
-            tilt_angle -= 1
-            kit.servo[1].angle = tilt_angle
-            time.sleep(0.01)
+    langkah_halus = 200
+    selisih_posisi = posisi_akhir - posisi_mulai
+    jeda_waktu = durasi / langkah_halus
+    
+    for i in range(langkah_halus + 1):
+        posisi_saat_ini = posisi_mulai + (i / langkah_halus) * selisih_posisi
+        posisi_saat_ini = max(-1.0, min(1.0, posisi_saat_ini))
+        servo.value = posisi_saat_ini
+        sleep(jeda_waktu)
 
-    elif key == "s":
-        release_s = False
-        while(tilt_angle < 180 and not release_s):
-            tilt_angle += 1
-            kit.servo[1].angle = tilt_angle
-            time.sleep(0.01)
+try:
+    print("Mengatur kedua servo ke posisi awal...")
+    servo_angguk.value = TITIK_NOL_ANGGUK
+    servo_geleng.value = 0.0
+    sleep(1) 
 
-    elif key == "a":
-        release_a = False
-        while(pan_angle < 180 and not release_a):
-            pan_angle += 1
-            kit.servo[0].angle = pan_angle
-            time.sleep(0.01)
-
-    elif key == "d":
-        release_d = False
-        while(pan_angle > 0 and not release_d):
-            pan_angle -= 1
-            kit.servo[0].angle = pan_angle
-            time.sleep(0.01)
-
-def release(key):
-    global release_a, release_d, release_w, release_s
-
-    if key == "w":
-        release_w = True
-
-    elif key == "s":
-        release_s = True
-
-    elif key == "a":
-        release_a = True
-
-    elif key == "d":
-        release_d = True
-
-listen_keyboard(
-    on_press=press,
-    on_release=release,
-    delay_second_char = 0.001
-)
+    print("Memulai gerakan mengangguk dan menggeleng...")
+    
+    while True:
+        posisi_depan = TITIK_NOL_ANGGUK - rentang_angguk
+        gerak_halus(servo_angguk, TITIK_NOL_ANGGUK, posisi_depan, 2.0)
+        gerak_halus(servo_angguk, posisi_depan, TITIK_NOL_ANGGUK, 2.0)
+        
+        posisi_kanan = rentang_geleng # Menggunakan nilai 1.0
+        posisi_kiri = -rentang_geleng # Menggunakan nilai -1.0
+        
+        gerak_halus(servo_geleng, 0.0, posisi_kanan, 1.5) 
+        gerak_halus(servo_geleng, posisi_kanan, posisi_kiri, 3.0) 
+        gerak_halus(servo_geleng, posisi_kiri, 0.0, 1.5) 
+        
+except KeyboardInterrupt:
+    print("Program dihentikan.")
+    servo_angguk.close()
+    servo_geleng.close()
