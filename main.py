@@ -71,13 +71,11 @@ async def ws_config_switch(websocket: WebSocket):
             payload = json.loads(data)
             cmd = payload.get("cmd")
             
-            # CASE A: SIMPAN CONFIG
             if cmd == "save_config":
                 new_config = payload.get("config")
                 cfg_mgr.save_user_config(new_config)
                 await websocket.send_text(json.dumps({"status": "saved", "msg": "Config saved to JSON"}))
                 
-            # CASE B: GANTI MODE
             elif cmd == "set_mode":
                 mode = payload.get("mode") # "default" / "user"
                 
@@ -466,7 +464,7 @@ async def ws_qr(websocket: WebSocket):
         robot_cam.ai.set_mode("off")
 
 
-# 7. OBSTACLE AVOIDANCE (FIX: START IN STANDBY)
+# 7. OBSTACLE AVOIDANCE (FINAL: START IN STANDBY)
 @app.websocket("/ws/avoid")
 async def ws_avoid(websocket: WebSocket):
     global CURRENT_CONTROLLER
@@ -474,7 +472,7 @@ async def ws_avoid(websocket: WebSocket):
     CURRENT_CONTROLLER = "avoid"
     
     robot_cam.ai.set_mode("off")
-    print("[WS] AVOID Connected - STANDBY FIRST")
+    print("[WS] AVOID Connected - FINAL MODE")
     
     # --- SHARED DATA ---
     sensor_data = {"dist": 100.0, "panic": False}
@@ -484,23 +482,23 @@ async def ws_avoid(websocket: WebSocket):
     SPEED_MUNDUR  = -0.60 
     SPEED_PUTAR   = 0.40
     
-    ZONA_KRITIS   = 10  
-    ZONA_BREAK    = 15  
-    SYARAT_JALAN  = 30  
+    ZONA_KRITIS   = 10  # < 10cm: WAJIB MUNDUR
+    ZONA_BREAK    = 15  # 10-15cm: STOP & SCAN
+    SYARAT_JALAN  = 30  # > 30cm: AMAN
     
-    MAX_RETREAT_TIME = 0.5  
+    MAX_RETREAT_TIME = 0.5  # Failsafe Mundur
     TIME_SCAN_TURN   = 0.8 
     TIME_STABIL      = 0.5
 
-    # [PERBAIKAN 1] State awal adalah IDLE (Diam), bukan FORWARD
+    # STATE START = IDLE (DIAM DULU)
     state = "IDLE"
-    current_mode = "standby" # Melacak pilihan user (standby/avoid_hcsr/avoid_hybrid)
+    current_mode = "standby"
     retreat_locked = False
     
     state_ts = time.monotonic()
     dist_left = 0
     dist_right = 0
-    active_mask = [1, 1, 1, 1, 1] # Untuk mode hybrid
+    active_mask = [1, 1, 1, 1, 1]
     
     # --- SENSOR TASK ---
     async def sensor_loop():
@@ -535,10 +533,8 @@ async def ws_avoid(websocket: WebSocket):
                         robot_motor.stop()
                         msg = "MODE: STANDBY"
                     else:
-                        # [PERBAIKAN 2] Baru mulai jalan (FORWARD) jika mode dipilih
                         state = "FORWARD"
                         retreat_locked = False
-                        
                         if mode == "avoid_hybrid":
                             cfg = payload.get("config", {})
                             active_mask = [1 if cfg.get(k, True) else 0 for k in ["ll","l","m","r","rr"]]
@@ -547,10 +543,9 @@ async def ws_avoid(websocket: WebSocket):
                             msg = "MODE: AVOID START"
                             
                     await websocket.send_text(json.dumps({"status": "active", "mode": msg}))
-                    
             except asyncio.TimeoutError: pass
 
-            # 2. LOGIKA UTAMA (Hanya jalan jika BUKAN STANDBY)
+            # 2. LOGIKA UTAMA
             if CURRENT_CONTROLLER == "avoid" and current_mode != "standby":
                 
                 distance = sensor_data["dist"]
@@ -558,9 +553,7 @@ async def ws_avoid(websocket: WebSocket):
                 now = time.monotonic()
                 elapsed = now - state_ts
 
-                # ====================================================
-                # PRIORITAS 1: SENSOR BFD (LOCKING)
-                # ====================================================
+                # PRIORITAS 1: SENSOR BFD
                 if is_panic and not retreat_locked:
                     print("[PRIORITY] BFD TRIGGERED! Locking Retreat.")
                     robot_motor.stop()
@@ -570,15 +563,10 @@ async def ws_avoid(websocket: WebSocket):
                     state_ts = now 
                     continue 
 
-                # ====================================================
                 # STATE MACHINE
-                # ====================================================
-
-                # 0. IDLE (Safety State)
                 if state == "IDLE":
                     robot_motor.stop()
 
-                # 1. FORWARD
                 elif state == "FORWARD":
                     if distance < ZONA_KRITIS:
                         if not retreat_locked:
@@ -590,11 +578,9 @@ async def ws_avoid(websocket: WebSocket):
                         robot_motor.stop()
                         state = "SCAN_INIT" 
                     else:
-                        # LOGIKA GERAK MAJU (Beda antara Pure Avoid & Hybrid)
                         if current_mode == "avoid_hcsr":
                             robot_motor.move(SPEED_MAJU, 0.0)
                         elif current_mode == "avoid_hybrid":
-                            # Simple Line Follower Logic
                             raw_lines = robot_sensors.get_line_status()
                             lines = [r & m for r, m in zip(raw_lines, active_mask)]
                             if sum(lines) == 0: robot_motor.stop()
@@ -604,23 +590,21 @@ async def ws_avoid(websocket: WebSocket):
                             elif lines[0]: robot_motor.move(0.10, -0.5)
                             elif lines[4]: robot_motor.move(0.10, 0.5)
 
-                # 2. RETREAT (FAILSAFE)
                 elif state == "RETREAT":
-                    succes_condition = distance >= ZONA_BREAK
-                    timeout_condition = elapsed > MAX_RETREAT_TIME 
+                    succes = distance >= ZONA_BREAK
+                    timeout = elapsed > MAX_RETREAT_TIME 
                     
-                    if succes_condition:
-                        print(f"[RETREAT] Target Tercapai ({distance:.1f}cm). Stop.")
+                    if succes:
+                        print(f"[RETREAT] Sukses ({distance:.1f}cm). Stop.")
                         robot_motor.stop()
                         state = "SCAN_INIT"
-                    elif timeout_condition:
+                    elif timeout:
                         print(f"[RETREAT] TIMEOUT 0.5s. Force Stop.")
                         robot_motor.stop()
                         state = "SCAN_INIT" 
                     else:
                         robot_motor.move(SPEED_MUNDUR, 0.0)
 
-                # 3. SCANNING SEQUENCE
                 elif state == "SCAN_INIT":
                     state = "SCAN_LEFT_MOVE"
                     state_ts = now
@@ -667,7 +651,6 @@ async def ws_avoid(websocket: WebSocket):
                             state = "DEAD_END"
                         state_ts = now
 
-                # 4. TURN & EXECUTE
                 elif state == "TURN_TO_LEFT":
                     robot_motor.move(0.0, -SPEED_PUTAR)
                     if elapsed > (TIME_SCAN_TURN * 2.2): 
@@ -678,12 +661,10 @@ async def ws_avoid(websocket: WebSocket):
                     robot_motor.stop()
                     state = "RESET_AND_GO"
 
-                # 5. RESET LOCK
                 elif state == "RESET_AND_GO":
                     retreat_locked = False 
                     state = "FORWARD"
 
-                # 6. DEAD END
                 elif state == "DEAD_END":
                     robot_extras.set_buzzer("on")
                     if elapsed > 3.0:
@@ -692,7 +673,6 @@ async def ws_avoid(websocket: WebSocket):
                         state_ts = now
 
             else:
-                # [PERBAIKAN 3] Jika mode == standby, pastikan motor mati
                 robot_motor.stop()
             
             await asyncio.sleep(0.01)
