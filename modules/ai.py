@@ -32,7 +32,7 @@ class AIProcessor:
         self.deadzone_x_val = 0.0
         self.deadzone_y_val = 0.0
         
-        # --- TAMBAHAN BARU: VISUALISASI JARAK (HUD) ---
+        # --- VISUALISASI JARAK (HUD) ---
         self.distance_val = None 
 
         # Setup Model SSD MobileNet (Objek)
@@ -72,7 +72,6 @@ class AIProcessor:
         self.track_error_x = 0.0
         self.track_error_y = 0.0
         
-        # Matikan deadzone visual saat ganti mode (kecuali dinyalakan lagi oleh main.py)
         if mode == "off":
             self.show_deadzone = False
             
@@ -83,61 +82,43 @@ class AIProcessor:
         print(f"[AI] Target Color: {self.target_color}")
 
     def set_deadzone(self, active, x=0.0, y=0.0):
-        """Mengaktifkan visualisasi kotak Deadzone di layar"""
         self.show_deadzone = active
         self.deadzone_x_val = x
         self.deadzone_y_val = y
 
-    # --- FUNGSI BARU UNTUK UPDATE JARAK ---
     def update_distance(self, dist):
-        """Menerima data jarak (cm) dari Main Loop untuk ditampilkan"""
         self.distance_val = dist
-    # --------------------------------------
 
     def process_frame(self, frame):
-        # Reset data per frame
         self.track_error_x = 0.0
         self.track_error_y = 0.0
         self.object_found = False
         
-        # 1. Proses Utama sesuai Mode
         processed_frame = frame
         if self.mode == "off": pass
         elif self.mode == "object_detection": processed_frame = self._process_ssd_mobilenet(frame)
         elif self.mode == "face_detection": processed_frame = self._process_face(frame)
-        elif self.mode == "gesture_recognition": processed_frame = self._process_gesture(frame)
+        elif self.mode in ["gesture_recognition", "hand_tracking", "gesture"]:
+            processed_frame = self._process_gesture(frame)
         elif self.mode == "color_detection": processed_frame = self._process_color(frame)
         elif self.mode == "qr_recognition": processed_frame = self._process_qr(frame)
         elif self.mode == "auto_pilot": processed_frame = self._process_auto_pilot(frame)
 
-        # 2. Gambar Overlay Deadzone (Jika Aktif)
+        # Overlay Deadzone
         if self.show_deadzone:
             h, w, _ = processed_frame.shape
             cx, cy = w // 2, h // 2
-            
-            # Hitung ukuran kotak
             span_x = int(w * self.deadzone_x_val)
             span_y = int(h * self.deadzone_y_val)
-            
-            pt1 = (cx - span_x, cy - span_y)
-            pt2 = (cx + span_x, cy + span_y)
-            
-            # Gambar Kotak Cyan (Biru Muda)
-            cv2.rectangle(processed_frame, pt1, pt2, (255, 255, 0), 2)
-            
-            # Gambar Crosshair Merah Kecil di Tengah
+            cv2.rectangle(processed_frame, (cx - span_x, cy - span_y), (cx + span_x, cy + span_y), (255, 255, 0), 2)
             cv2.line(processed_frame, (cx - 10, cy), (cx + 10, cy), (0, 0, 255), 1)
             cv2.line(processed_frame, (cx, cy - 10), (cx, cy + 10), (0, 0, 255), 1)
 
-        # 3. Overlay Distance (BARU - Pojok Kiri Atas)
+        # Overlay Distance
         if self.distance_val is not None:
-            # Tentukan Warna: Hijau jika aman (>25), Merah jika bahaya (<25)
             color = (0, 255, 0) if self.distance_val > 25 else (0, 0, 255)
             text = f"DIST: {self.distance_val:.1f} cm"
-            
-            # Background Hitam Transparan (Agar tulisan terbaca)
             cv2.rectangle(processed_frame, (5, 5), (220, 40), (0, 0, 0), -1) 
-            # Tulisan
             cv2.putText(processed_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
         return processed_frame
@@ -164,9 +145,7 @@ class AIProcessor:
         best_contour = None
         
         for color in color_definitions:
-            # Filter warna (Skip jika bukan target & target bukan "all")
-            if self.target_color != "all" and color["label"] != self.target_color:
-                continue 
+            if self.target_color != "all" and color["label"] != self.target_color: continue 
 
             mask = cv2.inRange(hsv, color["lower"], color["upper"])
             mask = cv2.dilate(mask, kernel) 
@@ -183,13 +162,11 @@ class AIProcessor:
                         max_area = area
                         best_contour = contour
         
-        # Hitung Error untuk Tracking Servo
         if best_contour is not None:
             x, y, w, h = cv2.boundingRect(best_contour)
             h_img, w_img, _ = frame.shape
             cx = x + (w // 2)
             cy = y + (h // 2)
-            
             self.track_error_x = (cx - (w_img / 2)) / (w_img / 2)
             self.track_error_y = (cy - (h_img / 2)) / (h_img / 2)
             self.track_area = max_area / (w_img * h_img)
@@ -239,23 +216,50 @@ class AIProcessor:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = self.hands.process(rgb)
         self.gesture_data = None 
+        
         if res.multi_hand_landmarks:
             for hand_landmarks, hand_info in zip(res.multi_hand_landmarks, res.multi_handedness):
                 self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 fingers = []
-                # Jempol
+                
+                # Logic Jempol
                 if hand_landmarks.landmark[4].x < hand_landmarks.landmark[3].x: fingers.append(1)
                 else: fingers.append(0)
-                # 4 Jari
+                
+                # Logic 4 Jari
                 for id in [8, 12, 16, 20]:
                     if hand_landmarks.landmark[id].y < hand_landmarks.landmark[id - 2].y: fingers.append(1)
                     else: fingers.append(0)
+                
                 total = fingers.count(1)
                 self.gesture_data = total
-                cv2.putText(frame, f"Fingers: {total}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                if total == 5: 
-                    cv2.putText(frame, "STOP", (200, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,255), 4)
-                    self.object_found = True 
+
+                # --- LOGIKA LABEL CERDAS ---
+                
+                # Default: Tampilkan Angka saja (Untuk mode detection biasa)
+                label_text = f"Count: {total}"
+                color_text = (255, 255, 0) # Cyan/Kuning
+
+                # HANYA Tampilkan Perintah Robot jika mode == "gesture_recognition"
+                if self.mode == "gesture_recognition":
+                    if total == 1: 
+                        label_text = "FORWARD"
+                        color_text = (0, 255, 0)
+                    elif total == 2: 
+                        label_text = "BACKWARD"
+                        color_text = (0, 0, 255)
+                    elif total == 3: label_text = "LEFT"
+                    elif total == 4: label_text = "RIGHT"
+                    elif total == 5: 
+                        label_text = "STOP"
+                        color_text = (0, 0, 255)
+                        self.object_found = True # Trigger Logic di main.py
+
+                # Tampilkan tulisan di dekat pergelangan tangan (landmark 0)
+                h, w, c = frame.shape
+                cx, cy = int(hand_landmarks.landmark[0].x * w), int(hand_landmarks.landmark[0].y * h)
+                cv2.putText(frame, label_text, (cx - 20, cy - 20), cv2.FONT_HERSHEY_SIMPLEX, 1, color_text, 2)
+
         return frame
 
     def _process_qr(self, frame):
