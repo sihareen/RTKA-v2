@@ -183,84 +183,104 @@ async def ws_tracking(websocket: WebSocket):
     CURRENT_CONTROLLER = "tracking"
     
     robot_cam.ai.set_mode("off") 
-    print("[WS] TRACKING Connected")
+    print("[WS] TRACKING Connected - DIRECT MOVE MODE")
     
+    # Posisi awal servo (Tengah = 0)
     pan_pos = 0.0
     tilt_pos = 0.0
     robot_extras.move_servo("pan", 0)
     robot_extras.move_servo("tilt", 0)
-
-    prev_error_x = 0.0
-    prev_error_y = 0.0
-    ZONA_X = 0.20
-    ZONA_Y = 0.20
-    robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
+    
+    # --- KONFIGURASI TRACKING ---
+    # FOV_FACTOR: Faktor pengali untuk mengubah error layar (0-1) menjadi derajat.
+    # Misal: Error 0.5 (setengah layar) * 40 = Geser 20 derajat.
+    # Angka 40 adalah estimasi aman untuk kamera wide standar.
+    FOV_FACTOR_X = 40.0
+    FOV_FACTOR_Y = 30.0
+    
+    # THRESHOLD: Batas minimal servo mau gerak (Sesuai info kamu servo berat di < 5-10 derajat)
+    # Kita set 6 derajat. Jika perubahan < 6 derajat, kita diamkan saja.
+    MOVE_THRESHOLD = 6.0
 
     await websocket.send_text(json.dumps({"status": "active", "mode": "standby"}))
 
     try:
         while True:
+            # 1. Cek Command Websocket
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                 payload = json.loads(data)
                 
                 if payload.get("cmd") == "set_ai_mode":
                     req = payload.get("mode") 
-                    if req == "none":
-                        robot_cam.ai.set_mode("off")
-                        pan_pos, tilt_pos = 0.0, 0.0
-                        prev_error_x, prev_error_y = 0.0, 0.0
-                        robot_extras.move_servo("pan", 0)
-                        robot_extras.move_servo("tilt", 0)
-                        await asyncio.sleep(0.5)
-                        robot_extras.detach_servos()
-                        await websocket.send_text(json.dumps({"status": "active", "mode": "standby"}))
-                        
-                    elif req == "face_track":
-                        robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
+                    if req == "face_track":
                         robot_cam.ai.set_mode("face_detection")
                         await websocket.send_text(json.dumps({"status": "active", "mode": "face_track"}))
-                        
                     elif req == "color_track":
-                        robot_cam.ai.set_deadzone(True, ZONA_X, ZONA_Y)
                         color = payload.get("color", "red") 
                         robot_cam.ai.set_color_target(color)
                         robot_cam.ai.set_mode("color_detection")
-                        await websocket.send_text(json.dumps({"status": "active", "mode": f"track_{color}"}))     
+                        await websocket.send_text(json.dumps({"status": "active", "mode": f"track_{color}"}))
+                    elif req == "none":
+                        robot_cam.ai.set_mode("off")
+                        robot_extras.detach_servos()
+                        
             except asyncio.TimeoutError: pass
 
+            # 2. Logika Tracking
             if CURRENT_CONTROLLER == "tracking" and robot_cam.ai.mode != "off" and robot_cam.ai.object_found:
-                raw_x = robot_cam.ai.track_error_x 
-                raw_y = getattr(robot_cam.ai, 'track_error_y', 0.0)
-
-                # Smoothing
-                alpha = 0.2
-                smooth_x = (raw_x * alpha) + (prev_error_x * (1.0 - alpha))
-                smooth_y = (raw_y * alpha) + (prev_error_y * (1.0 - alpha))
-                prev_error_x, prev_error_y = smooth_x, smooth_y
-
-                if abs(smooth_x) < ZONA_X: smooth_x = 0
-                if abs(smooth_y) < ZONA_Y: smooth_y = 0
-
-                if smooth_x != 0 or smooth_y != 0:
-                    gain = 0.5 
-                    delta_pan = max(-1.0, min(1.0, smooth_x * gain))
-                    delta_tilt = max(-1.0, min(1.0, smooth_y * gain))
-
-                    pan_pos = max(-90, min(90, pan_pos - delta_pan))
-                    tilt_pos = max(-90, min(90, tilt_pos + delta_tilt))
+                
+                # Ambil Error dari AI (-1.0 kiri s/d 1.0 kanan)
+                err_x = robot_cam.ai.track_error_x 
+                err_y = getattr(robot_cam.ai, 'track_error_y', 0.0)
+                
+                # Hitung berapa derajat harus bergeser
+                # Jika target di KANAN (err_x > 0), Pan harus KURANG (Geser Kanan) -> Tergantung arah servo kamu
+                # Coba tanda (-) ini. Jika terbalik, ganti jadi (+)
+                delta_pan = -(err_x * FOV_FACTOR_X)
+                delta_tilt = (err_y * FOV_FACTOR_Y) # Tilt biasanya searah error
+                
+                # Cek apakah pergeseran cukup signifikan?
+                # Ini menghindari servo diperintah gerak cuma 1-2 derajat (yang bikin macet/panas)
+                if abs(delta_pan) > MOVE_THRESHOLD or abs(delta_tilt) > MOVE_THRESHOLD:
                     
-                    robot_extras.move_servo("pan", int(pan_pos))
-                    robot_extras.move_servo("tilt", int(tilt_pos))
-                else:
-                    robot_extras.detach_servos()
+                    # Update Posisi Target Absolut
+                    # Hanya update jika melewari threshold masing-masing sumbu
+                    if abs(delta_pan) > MOVE_THRESHOLD:
+                        pan_pos += delta_pan
+                    
+                    if abs(delta_tilt) > MOVE_THRESHOLD:
+                        tilt_pos += delta_tilt
 
-            await asyncio.sleep(0.04) 
+                    # Batasi Sudut (-90 s/d 90)
+                    pan_pos = max(-90, min(90, pan_pos))
+                    tilt_pos = max(-90, min(90, tilt_pos))
+                    
+                    print(f"[MOVE] Err: {err_x:.2f} -> Geser {delta_pan:.1f} deg -> Target: {pan_pos:.1f}")
+                    
+                    # Eksekusi Gerakan (Direct Move)
+                    # Fungsi ini akan BLOCKING selama 0.3 detik (Sesuai referensi extras.py)
+                    # Ini bagus karena memberi jeda kamera untuk stabil sebelum baca lagi
+                    robot_extras.move_servo("pan", int(pan_pos))
+                    
+                    # Jika tilt juga berubah signifikan, gerakkan tilt
+                    if abs(delta_tilt) > MOVE_THRESHOLD:
+                         robot_extras.move_servo("tilt", int(tilt_pos))
+                    
+                    # Reset data AI sebentar agar tidak double-read frame lama
+                    robot_cam.ai.track_error_x = 0
+                    
+                else:
+                    # Error kecil (Target sudah di tengah), diam saja.
+                    pass
+            
+            # Loop delay sedikit (0.1) agar tidak membebani CPU
+            # extras.py sudah melakukan sleep(0.3), jadi total delay sekitar 0.4s per gerakan
+            await asyncio.sleep(0.1)
 
     except Exception as e:
         print(f"[TRACK] Error: {e}")
     finally:
-        robot_cam.ai.set_deadzone(False)
         robot_extras.detach_servos()
 
 
