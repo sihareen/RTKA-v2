@@ -27,13 +27,11 @@ class AIProcessor:
         self.qr_data = None         
         self.gesture_data = None    
 
-        # --- VISUALISASI DEADZONE ---
+        # --- VISUALISASI ---
         self.show_deadzone = False
         self.deadzone_x_val = 0.0
         self.deadzone_y_val = 0.0
-        
-        # --- VISUALISASI JARAK (HUD) ---
-        self.distance_val = None 
+        self.distance_val = None  # Data Jarak dari Main.py
 
         # Setup Model SSD MobileNet (Objek)
         self.model_path = "assets/ssd_mobilenet_v2.tflite"
@@ -65,6 +63,7 @@ class AIProcessor:
 
     def set_mode(self, mode):
         self.mode = mode
+        # Reset Data
         self.qr_data = None
         self.gesture_data = None
         self.object_found = False
@@ -79,7 +78,6 @@ class AIProcessor:
 
     def set_color_target(self, color_name):
         self.target_color = color_name.lower() 
-        print(f"[AI] Target Color: {self.target_color}")
 
     def set_deadzone(self, active, x=0.0, y=0.0):
         self.show_deadzone = active
@@ -87,6 +85,7 @@ class AIProcessor:
         self.deadzone_y_val = y
 
     def update_distance(self, dist):
+        """Update data jarak untuk ditampilkan di layar"""
         self.distance_val = dist
 
     def process_frame(self, frame):
@@ -95,16 +94,24 @@ class AIProcessor:
         self.object_found = False
         
         processed_frame = frame
-        if self.mode == "off": pass
-        elif self.mode == "object_detection": processed_frame = self._process_ssd_mobilenet(frame)
-        elif self.mode == "face_detection": processed_frame = self._process_face(frame)
+        
+        # 1. Routing Mode
+        if self.mode == "off": 
+            pass
+        elif self.mode == "object_detection": 
+            processed_frame = self._process_ssd_mobilenet(frame)
+        elif self.mode == "face_detection" or self.mode == "face_track": 
+            processed_frame = self._process_face(frame)
         elif self.mode in ["gesture_recognition", "hand_tracking", "gesture"]:
             processed_frame = self._process_gesture(frame)
-        elif self.mode == "color_detection": processed_frame = self._process_color(frame)
-        elif self.mode == "qr_recognition": processed_frame = self._process_qr(frame)
-        elif self.mode == "auto_pilot": processed_frame = self._process_auto_pilot(frame)
+        elif self.mode == "color_detection": 
+            processed_frame = self._process_color(frame)
+        elif self.mode == "qr_recognition": 
+            processed_frame = self._process_qr(frame)
+        elif self.mode == "auto_pilot": 
+            processed_frame = self._process_auto_pilot(frame)
 
-        # Overlay Deadzone
+        # 2. Overlay Deadzone (Kotak Tengah)
         if self.show_deadzone:
             h, w, _ = processed_frame.shape
             cx, cy = w // 2, h // 2
@@ -114,12 +121,26 @@ class AIProcessor:
             cv2.line(processed_frame, (cx - 10, cy), (cx + 10, cy), (0, 0, 255), 1)
             cv2.line(processed_frame, (cx, cy - 10), (cx, cy + 10), (0, 0, 255), 1)
 
-        # Overlay Distance
-        if self.distance_val is not None:
-            color = (0, 255, 0) if self.distance_val > 25 else (0, 0, 255)
-            text = f"DIST: {self.distance_val:.1f} cm"
+        # 3. Overlay Distance (HUD Pojok Kiri Atas)
+        # Selalu tampilkan jika mode avoid, autopilot, atau ada data jarak
+        if "avoid" in str(self.mode) or self.mode == "auto_pilot" or self.distance_val is not None:
+            
+            text_dist = ""
+            color_dist = (0, 255, 0) # Hijau Default
+
+            if self.distance_val is None:
+                text_dist = "DIST: ERR"
+                color_dist = (0, 0, 255) # Merah (Error/Disconnect)
+            else:
+                if self.distance_val > 25:
+                    color_dist = (0, 255, 0) # Hijau (Aman)
+                else:
+                    color_dist = (0, 0, 255) # Merah (Dekat)
+                text_dist = f"DIST: {self.distance_val:.1f} cm"
+
+            # Background Hitam Transparan
             cv2.rectangle(processed_frame, (5, 5), (220, 40), (0, 0, 0), -1) 
-            cv2.putText(processed_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            cv2.putText(processed_frame, text_dist, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_dist, 2)
 
         return processed_frame
 
@@ -236,11 +257,10 @@ class AIProcessor:
 
                 # --- LOGIKA LABEL CERDAS ---
                 
-                # Default: Tampilkan Angka saja (Untuk mode detection biasa)
                 label_text = f"Count: {total}"
-                color_text = (255, 255, 0) # Cyan/Kuning
+                color_text = (255, 255, 0) # Default: Kuning
 
-                # HANYA Tampilkan Perintah Robot jika mode == "gesture_recognition"
+                # Cek apakah mode Control aktif?
                 if self.mode == "gesture_recognition":
                     if total == 1: 
                         label_text = "FORWARD"
@@ -253,9 +273,8 @@ class AIProcessor:
                     elif total == 5: 
                         label_text = "STOP"
                         color_text = (0, 0, 255)
-                        self.object_found = True # Trigger Logic di main.py
+                        self.object_found = True
 
-                # Tampilkan tulisan di dekat pergelangan tangan (landmark 0)
                 h, w, c = frame.shape
                 cx, cy = int(hand_landmarks.landmark[0].x * w), int(hand_landmarks.landmark[0].y * h)
                 cv2.putText(frame, label_text, (cx - 20, cy - 20), cv2.FONT_HERSHEY_SIMPLEX, 1, color_text, 2)
