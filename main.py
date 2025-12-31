@@ -503,7 +503,7 @@ async def ws_avoid(websocket: WebSocket):
     SPEED_PUTAR   = 0.40
     
     ZONA_KRITIS   = 10  # < 10cm: WAJIB MUNDUR
-    ZONA_BREAK    = 15  # 10-15cm: STOP & SCAN
+    ZONA_BREAK    = 18  # 10-15cm: STOP & SCAN
     SYARAT_JALAN  = 30  # > 30cm: AMAN
     
     MAX_RETREAT_TIME = 0.5  # Failsafe Mundur
