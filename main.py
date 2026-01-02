@@ -232,7 +232,7 @@ async def ws_autopilot(websocket: WebSocket):
         robot_cam.ai.set_mode("off")
 
 
-# 3. TRACKING
+# 3. TRACKING (SAFEZONE & MINIMUM STEP)
 @app.websocket("/ws/tracking")
 async def ws_tracking(websocket: WebSocket):
     global CURRENT_CONTROLLER
@@ -240,16 +240,31 @@ async def ws_tracking(websocket: WebSocket):
     CURRENT_CONTROLLER = "tracking"
     
     robot_cam.ai.set_mode("off") 
-    logger.info("TRACKING Connected")
+    logger.info("TRACKING Connected - SAFEZONE MODE")
     
     pan_pos = 0.0
     tilt_pos = 0.0
     await async_move_servo("pan", 0)
     await async_move_servo("tilt", 0)
     
-    FOV_FACTOR_X = 40.0
-    FOV_FACTOR_Y = 30.0
-    MOVE_THRESHOLD = 6.0 
+    # --- KONFIGURASI TRACKING ---
+    
+    # 1. SAFEZONE (Area Kotak Tengah)
+    # 0.15 artinya 15% dari tengah. Objek didalam area ini TIDAK DIGUBRIS.
+    # Ini mencegah servo goyang-goyang saat objek sudah ditengah.
+    SAFEZONE_X = 0.15
+    SAFEZONE_Y = 0.15
+
+    # 2. SENSITIVITAS (FOV FACTOR)
+    # Berapa derajat servo berputar per 1.0 error.
+    # Diturunkan sedikit agar tidak agresif (Overshoot prevention)
+    FOV_FACTOR_X = 15.0
+    FOV_FACTOR_Y = 10.0
+    
+    # 3. MINIMUM STEP (Rentang Nilai Minimal)
+    # Servo hanya boleh bergerak jika perubahannya > 2 derajat.
+    # Jangan gerak cuma 0.5 derajat (buang tenaga & bikin panas).
+    MIN_STEP = 2.0 
 
     await websocket.send_text(json.dumps({"status": "active", "mode": "standby"}))
 
@@ -272,28 +287,54 @@ async def ws_tracking(websocket: WebSocket):
                         robot_cam.ai.set_mode("off")
                         await async_detach_servos()
             except asyncio.TimeoutError: pass
-            except WebSocketDisconnect: 
-                logger.info("Tracking Disconnected")
-                break
+            except WebSocketDisconnect: break
 
+            # LOGIKA UTAMA TRACKING
             if CURRENT_CONTROLLER == "tracking" and robot_cam.ai.mode != "off" and robot_cam.ai.object_found:
+                
+                # 1. Ambil Error dari AI (-1.0 s/d 1.0)
                 err_x = robot_cam.ai.track_error_x 
                 err_y = getattr(robot_cam.ai, 'track_error_y', 0.0)
                 
-                delta_pan = -(err_x * FOV_FACTOR_X)
-                delta_tilt = (err_y * FOV_FACTOR_Y)
-                
-                if abs(delta_pan) > MOVE_THRESHOLD or abs(delta_tilt) > MOVE_THRESHOLD:
-                    if abs(delta_pan) > MOVE_THRESHOLD: pan_pos += delta_pan
-                    if abs(delta_tilt) > MOVE_THRESHOLD: tilt_pos += delta_tilt
+                delta_pan = 0
+                delta_tilt = 0
 
+                # 2. Cek SAFEZONE X (Pan)
+                # Jika error diluar batas 0.15 (diluar kotak), baru hitung gerak
+                if abs(err_x) > SAFEZONE_X:
+                    # Hitung derajat yang dibutuhkan
+                    calc_pan = -(err_x * FOV_FACTOR_X)
+                    
+                    # 3. Cek MINIMUM STEP
+                    # Hanya gerak jika butuh geser > 2 derajat
+                    if abs(calc_pan) >= MIN_STEP:
+                        delta_pan = calc_pan
+
+                # 4. Cek SAFEZONE Y (Tilt)
+                if abs(err_y) > SAFEZONE_Y:
+                    calc_tilt = (err_y * FOV_FACTOR_Y)
+                    if abs(calc_tilt) >= MIN_STEP:
+                        delta_tilt = calc_tilt
+                
+                # 5. Eksekusi Gerak
+                # Jika ada perubahan (salah satu tidak nol)
+                if delta_pan != 0 or delta_tilt != 0:
+                    
+                    pan_pos += delta_pan
+                    tilt_pos += delta_tilt
+
+                    # Kunci batas fisik (-90 s/d 90)
                     pan_pos = max(-90, min(90, pan_pos))
                     tilt_pos = max(-90, min(90, tilt_pos))
                     
-                    await async_move_servo("pan", int(pan_pos))
-                    if abs(delta_tilt) > MOVE_THRESHOLD:
+                    # Gerakkan Servo
+                    if delta_pan != 0:
+                        await async_move_servo("pan", int(pan_pos))
+                    
+                    if delta_tilt != 0:
                         await async_move_servo("tilt", int(tilt_pos))
                     
+                    # Reset error AI agar tidak double process
                     robot_cam.ai.track_error_x = 0
                 
             await asyncio.sleep(0.1)

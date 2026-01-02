@@ -93,6 +93,7 @@ class AIProcessor:
         self.track_error_y = 0.0
         self.object_found = False
         
+        # --- FIX UTAMA: Inisialisasi processed_frame ---
         processed_frame = frame
         
         # 1. Routing Mode
@@ -111,34 +112,40 @@ class AIProcessor:
         elif self.mode == "auto_pilot": 
             processed_frame = self._process_auto_pilot(frame)
 
-        # 2. Overlay Deadzone (Kotak Tengah)
-        if self.show_deadzone:
-            h, w, _ = processed_frame.shape
-            cx, cy = w // 2, h // 2
-            span_x = int(w * self.deadzone_x_val)
-            span_y = int(h * self.deadzone_y_val)
-            cv2.rectangle(processed_frame, (cx - span_x, cy - span_y), (cx + span_x, cy + span_y), (255, 255, 0), 2)
-            cv2.line(processed_frame, (cx - 10, cy), (cx + 10, cy), (0, 0, 255), 1)
-            cv2.line(processed_frame, (cx, cy - 10), (cx, cy + 10), (0, 0, 255), 1)
+        # --- VISUALISASI SAFEZONE / DEADZONE ---
+        # Mengambil ukuran frame yang SUDAH DIDEFINISIKAN
+        h, w, _ = processed_frame.shape
+        cy, cx = h // 2, w // 2
+        
+        # Tampilkan Kotak Safezone (Cyan) - Sesuai SAFEZONE 15% di main.py
+        ZONE_X = int(w * 0.15) 
+        ZONE_Y = int(h * 0.15)
+        
+        # Gambar kotak hanya visual (logika diam ada di main.py)
+        cv2.rectangle(processed_frame, 
+                     (cx - ZONE_X, cy - ZONE_Y), 
+                     (cx + ZONE_X, cy + ZONE_Y), 
+                     (255, 255, 0), 1)
+        
+        # Garis Tengah (Crosshair)
+        cv2.line(processed_frame, (cx, cy-10), (cx, cy+10), (0,0,255), 1)
+        cv2.line(processed_frame, (cx-10, cy), (cx+10, cy), (0,0,255), 1)
 
         # 3. Overlay Distance (HUD Pojok Kiri Atas)
-        # Selalu tampilkan jika mode avoid, autopilot, atau ada data jarak
         if "avoid" in str(self.mode) or self.mode == "auto_pilot" or self.distance_val is not None:
-            
             text_dist = ""
             color_dist = (0, 255, 0) # Hijau Default
 
             if self.distance_val is None:
                 text_dist = "DIST: ERR"
-                color_dist = (0, 0, 255) # Merah (Error/Disconnect)
+                color_dist = (0, 0, 255) # Merah (Error)
             else:
                 if self.distance_val > 25:
-                    color_dist = (0, 255, 0) # Hijau (Aman)
+                    color_dist = (0, 255, 0) # Hijau
                 else:
-                    color_dist = (0, 0, 255) # Merah (Dekat)
+                    color_dist = (0, 0, 255) # Merah
                 text_dist = f"DIST: {self.distance_val:.1f} cm"
 
-            # Background Hitam Transparan
             cv2.rectangle(processed_frame, (5, 5), (220, 40), (0, 0, 0), -1) 
             cv2.putText(processed_frame, text_dist, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_dist, 2)
 
@@ -256,11 +263,9 @@ class AIProcessor:
                 self.gesture_data = total
 
                 # --- LOGIKA LABEL CERDAS ---
-                
                 label_text = f"Count: {total}"
                 color_text = (255, 255, 0) # Default: Kuning
 
-                # Cek apakah mode Control aktif?
                 if self.mode == "gesture_recognition":
                     if total == 1: 
                         label_text = "FORWARD"
