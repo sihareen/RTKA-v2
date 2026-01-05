@@ -2,157 +2,179 @@ import cv2
 import numpy as np
 import os
 import mediapipe as mp
-import time
 from pyzbar.pyzbar import decode
 
-# Cek Import TensorFlow Lite
+# ==============================
+# TensorFlow Lite Import
+# ==============================
 try:
     import tflite_runtime.interpreter as tflite
 except ImportError:
     try:
         import tensorflow.lite as tflite
     except ImportError:
-        pass
+        tflite = None
+
 
 class AIProcessor:
     def __init__(self):
         self.mode = "off"
-        self.target_color = "none" 
-        
-        # Output Data Tracking
-        self.track_error_x = 0.0    
-        self.track_error_y = 0.0    
-        self.track_area = 0.0 
-        self.object_found = False   
-        self.qr_data = None         
-        self.gesture_data = None    
+        self.target_color = "none"
 
-        # --- VISUALISASI ---
-        self.show_deadzone = False
-        self.deadzone_x_val = 0.0
-        self.deadzone_y_val = 0.0
-        self.distance_val = None  # Data Jarak dari Main.py
+        # ===== OUTPUT DATA =====
+        self.track_error_x = 0.0
+        self.track_error_y = 0.0
+        self.track_area = 0.0
+        self.object_found = False
+        self.qr_data = None
+        self.gesture_data = None
 
-        # Setup Model SSD MobileNet (Objek)
+
+        # ==============================
+        # SSD MobileNet
+        # ==============================
         self.model_path = "assets/ssd_mobilenet_v2.tflite"
         self.interpreter = None
         self.labels = {
-            0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 
-            44: "bottle", 46: "cup", 62: "chair", 63: "couch", 
+            0: "person", 1: "bicycle", 2: "car", 3: "motorcycle",
+            44: "bottle", 46: "cup", 62: "chair", 63: "couch",
             64: "potted plant", 67: "dining table", 76: "cell phone"
         }
-        self.TARGET_OBJECTS = ["person", "car", "motorcycle", "bottle", "cup", "cell phone"]
+        self.TARGET_OBJECTS = [
+            "person", "car", "motorcycle", "bottle", "cup", "cell phone"
+        ]
         self._init_tflite()
 
-        # Setup MediaPipe (Wajah & Tangan)
+        # ==============================
+        #  VISUAL
+        # ==============================
+        self.show_safezone = False
+        self.distance_val = None
+        self.show_distance = False
+
+        # ==============================
+        # MediaPipe
+        # ==============================
         self.mp_face = mp.solutions.face_detection
-        self.face_detector = self.mp_face.FaceDetection(min_detection_confidence=0.5)
+        self.face_detector = self.mp_face.FaceDetection(
+            min_detection_confidence=0.5
+        )
+
         self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.5)
+        self.hands = self.mp_hands.Hands(
+            max_num_hands=1,
+            min_detection_confidence=0.5
+        )
+
         self.mp_draw = mp.solutions.drawing_utils
 
+    # ==========================================================
+    # INIT TFLITE
+    # ==========================================================
     def _init_tflite(self):
-        if os.path.exists(self.model_path):
+        if tflite and os.path.exists(self.model_path):
             try:
-                self.interpreter = tflite.Interpreter(model_path=self.model_path)
+                self.interpreter = tflite.Interpreter(
+                    model_path=self.model_path
+                )
                 self.interpreter.allocate_tensors()
                 self.input_details = self.interpreter.get_input_details()
                 self.output_details = self.interpreter.get_output_details()
-                print("[AI] Model Loaded.")
-            except: pass
+                print("[AI] TFLite model loaded")
+            except Exception as e:
+                print("[AI] Model load failed:", e)
 
+    # ==========================================================
+    # CONTROL
+    # ==========================================================
     def set_mode(self, mode):
         self.mode = mode
-        # Reset Data
         self.qr_data = None
         self.gesture_data = None
         self.object_found = False
         self.track_area = 0.0
         self.track_error_x = 0.0
         self.track_error_y = 0.0
-        
-        if mode == "off":
-            self.show_deadzone = False
-            
-        print(f"[AI] Mode: {self.mode}")
+        print(f"[AI] Mode set to {self.mode}")
 
     def set_color_target(self, color_name):
-        self.target_color = color_name.lower() 
-
-    def set_deadzone(self, active, x=0.0, y=0.0):
-        self.show_deadzone = active
-        self.deadzone_x_val = x
-        self.deadzone_y_val = y
+        self.target_color = color_name.lower()
 
     def update_distance(self, dist):
-        """Update data jarak untuk ditampilkan di layar"""
         self.distance_val = dist
 
+    # ==========================================================
+    # MAIN FRAME PROCESS
+    # ==========================================================
     def process_frame(self, frame):
         self.track_error_x = 0.0
         self.track_error_y = 0.0
         self.object_found = False
-        
-        # --- FIX UTAMA: Inisialisasi processed_frame ---
+
         processed_frame = frame
-        
-        # 1. Routing Mode
-        if self.mode == "off": 
-            pass
-        elif self.mode == "object_detection": 
+
+        if self.mode == "object_detection":
             processed_frame = self._process_ssd_mobilenet(frame)
-        elif self.mode == "face_detection" or self.mode == "face_track": 
+        elif self.mode in ["face_detection", "face_track"]:
             processed_frame = self._process_face(frame)
         elif self.mode in ["gesture_recognition", "hand_tracking", "gesture"]:
             processed_frame = self._process_gesture(frame)
-        elif self.mode == "color_detection": 
+        elif self.mode == "color_detection":
             processed_frame = self._process_color(frame)
-        elif self.mode == "qr_recognition": 
+        elif self.mode == "qr_recognition":
             processed_frame = self._process_qr(frame)
-        elif self.mode == "auto_pilot": 
+        elif self.mode == "auto_pilot":
             processed_frame = self._process_auto_pilot(frame)
 
-        # --- VISUALISASI SAFEZONE / DEADZONE ---
-        # Mengambil ukuran frame yang SUDAH DIDEFINISIKAN
-        h, w, _ = processed_frame.shape
-        cy, cx = h // 2, w // 2
-        
-        # Tampilkan Kotak Safezone (Cyan) - Sesuai SAFEZONE 15% di main.py
-        ZONE_X = int(w * 0.15) 
-        ZONE_Y = int(h * 0.15)
-        
-        # Gambar kotak hanya visual (logika diam ada di main.py)
-        cv2.rectangle(processed_frame, 
-                     (cx - ZONE_X, cy - ZONE_Y), 
-                     (cx + ZONE_X, cy + ZONE_Y), 
-                     (255, 255, 0), 1)
-        
-        # Garis Tengah (Crosshair)
-        cv2.line(processed_frame, (cx, cy-10), (cx, cy+10), (0,0,255), 1)
-        cv2.line(processed_frame, (cx-10, cy), (cx+10, cy), (0,0,255), 1)
+        # ==============================
+        # SAFEZONE VISUAL
+        # ==============================
+        # ==============================
+        # SAFEZONE VISUAL (CONTROL ONLY)
+        # ==============================
+        if self.show_safezone:
+            h, w, _ = processed_frame.shape
+            cx, cy = w // 2, h // 2
+            zx, zy = int(w * 0.15), int(h * 0.15)
 
-        # 3. Overlay Distance (HUD Pojok Kiri Atas)
-        if "avoid" in str(self.mode) or self.mode == "auto_pilot" or self.distance_val is not None:
-            text_dist = ""
-            color_dist = (0, 255, 0) # Hijau Default
+            cv2.rectangle(
+                processed_frame,
+                (cx - zx, cy - zy),
+                (cx + zx, cy + zy),
+                (255, 255, 0),
+                1
+            )
+            cv2.line(processed_frame, (cx - 10, cy), (cx + 10, cy), (0, 0, 255), 1)
+            cv2.line(processed_frame, (cx, cy - 10), (cx, cy + 10), (0, 0, 255), 1)
 
+
+        # ==============================
+        # DISTANCE OVERLAY (AVOID ONLY)
+        # ==============================
+        if self.show_distance:
             if self.distance_val is None:
-                text_dist = "DIST: ERR"
-                color_dist = (0, 0, 255) # Merah (Error)
+                text = "DIST: ERR"
+                color = (0, 0, 255)
             else:
-                if self.distance_val > 25:
-                    color_dist = (0, 255, 0) # Hijau
-                else:
-                    color_dist = (0, 0, 255) # Merah
-                text_dist = f"DIST: {self.distance_val:.1f} cm"
+                color = (0, 255, 0) if self.distance_val > 25 else (0, 0, 255)
+                text = f"DIST: {self.distance_val:.1f} cm"
 
-            cv2.rectangle(processed_frame, (5, 5), (220, 40), (0, 0, 0), -1) 
-            cv2.putText(processed_frame, text_dist, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_dist, 2)
+            cv2.rectangle(processed_frame, (5, 5), (220, 40), (0, 0, 0), -1)
+            cv2.putText(
+                processed_frame,
+                text,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                color,
+                2
+            )
 
         return processed_frame
 
-    # --- LOGIKA MODUL AI ---
-
+    # ==========================================================
+    # COLOR DETECTION
+    # ==========================================================
     def _process_color(self, frame):
         if self.target_color == "none":
             cv2.putText(frame, "SELECT COLOR", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
@@ -190,16 +212,16 @@ class AIProcessor:
                         max_area = area
                         best_contour = contour
         
-        if best_contour is not None:
+        if best_contour is not None and self.target_color != "all":
             x, y, w, h = cv2.boundingRect(best_contour)
             h_img, w_img, _ = frame.shape
             cx = x + (w // 2)
             cy = y + (h // 2)
+
             self.track_error_x = (cx - (w_img / 2)) / (w_img / 2)
             self.track_error_y = (cy - (h_img / 2)) / (h_img / 2)
             self.track_area = max_area / (w_img * h_img)
             self.object_found = True
-
         return frame
 
     def _process_face(self, frame):

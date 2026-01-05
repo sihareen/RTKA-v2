@@ -238,7 +238,7 @@ async def ws_tracking(websocket: WebSocket):
     global CURRENT_CONTROLLER
     await websocket.accept()
     CURRENT_CONTROLLER = "tracking"
-    
+    robot_cam.ai.show_safezone = True
     robot_cam.ai.set_mode("off") 
     logger.info("TRACKING Connected - SAFEZONE MODE")
     
@@ -340,83 +340,199 @@ async def ws_tracking(websocket: WebSocket):
             await asyncio.sleep(0.1)
 
     except Exception: logger.exception("Tracking Error")
-    finally: await async_detach_servos()
+    finally: 
+        await async_detach_servos() 
+        robot_cam.ai.show_safezone = False
 
 
-# 4. RECOGNITION (GESTURE & COLOR FOLLOW)
+# 4. GESTURE RECOGNITION & COLOR FOLLOW
 @app.websocket("/ws/recognitionControl")
 async def ws_recognition(websocket: WebSocket):
     global CURRENT_CONTROLLER
     await websocket.accept()
     CURRENT_CONTROLLER = "recognition"
-    robot_cam.ai.set_mode("off") 
+
+    robot_cam.ai.show_distance = True
+    robot_cam.ai.set_mode("off")
+    robot_cam.ai.show_safezone = True
     logger.info("RECOGNITION Connected")
-    
-    lost_counter = 0
+
+    # ==================================================
+    # STATE
+    # ==================================================
+    pan_pos = 0.0
+    last_throttle = 0.0
+
+    # ==================================================
+    # MOTOR CONFIG
+    # ==================================================
+    SPEED_LIMIT = 25
+    MAX_THROTTLE = 0.25
+    STEER_GAIN = 0.6
+
+    # ==================================================
+    # SERVO CONFIG (IDENTIK /ws/tracking)
+    # ==================================================
+    SAFEZONE_X = 0.15
+    FOV_FACTOR = 15.0
+    MIN_STEP = 2.0
+
+    # ==================================================
+    # DISTANCE CONFIG (cm)
+    # ==================================================
+    SAFE_DISTANCE_CM = 60.0  # <100 stop, >=100 boleh maju
+
+    # ==================================================
+    # ACTIVE BRAKE
+    # ==================================================
+    BRAKE_FORCE = -0.35
+    BRAKE_TIME = 0.10
+
+    async def active_brake():
+        nonlocal last_throttle
+        if last_throttle > 0.05:
+            robot_motor.move(BRAKE_FORCE, 0.0, SPEED_LIMIT)
+            await asyncio.sleep(BRAKE_TIME)
+        robot_motor.stop()
+        last_throttle = 0.0
+
+    # ==================================================
+    # SENSOR LOOP (KHUSUS RECOGNITION)
+    # ==================================================
+    sensor_running = True
+
+    async def sensor_loop():
+        while sensor_running:
+            try:
+                if robot_sensors:
+                    raw = robot_sensors.get_distance()
+                    robot_cam.ai.update_distance(raw)
+                await asyncio.sleep(0.05)  # 20 Hz
+            except Exception:
+                await asyncio.sleep(0.2)
+
+    sensor_task = asyncio.create_task(sensor_loop())
 
     try:
         while True:
+            # ==========================================
+            # RECEIVE COMMAND
+            # ==========================================
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
+                data = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=0.05
+                )
                 payload = json.loads(data)
-                
+
                 if payload.get("cmd") == "set_ai_mode":
                     req = payload.get("mode")
+
                     if req == "gesture_cmd":
                         robot_cam.ai.set_mode("gesture_recognition")
-                        await websocket.send_text(json.dumps({"status": "active", "mode": "gesture_control"}))
+                        await websocket.send_text(json.dumps({
+                            "status": "active",
+                            "mode": "gesture_control"
+                        }))
+
                     elif req == "color_follow":
                         target_color = payload.get("color", "none")
                         robot_cam.ai.set_color_target(target_color)
                         robot_cam.ai.set_mode("color_detection")
-                        status_msg = "waiting_color" if target_color == "none" else f"follow_{target_color}"
-                        await websocket.send_text(json.dumps({"status": "active", "mode": status_msg}))
-            except asyncio.TimeoutError: pass
-            except WebSocketDisconnect: break
-            
-            if CURRENT_CONTROLLER == "recognition":
-                # A. GESTURE
-                if robot_cam.ai.mode == "gesture_recognition":
-                    fingers = robot_cam.ai.gesture_data 
-                    if fingers == 1: robot_motor.move(0.3, 0.0) 
-                    elif fingers == 2: robot_motor.move(-0.3, 0.0)
-                    elif fingers == 3: robot_motor.move(0.0, -0.4)
-                    elif fingers == 4: robot_motor.move(0.0, 0.4)
-                    elif fingers is not None and fingers >= 5: robot_motor.stop()
-                    else: robot_motor.stop()
 
-                # B. COLOR FOLLOW
-                elif robot_cam.ai.mode == "color_detection":
-                    if robot_cam.ai.object_found:
-                        lost_counter = 0 
-                        await async_move_servo("pan", 0)
-                        area = robot_cam.ai.track_area
-                        TARGET_SIZE = 0.15 
-                        
-                        throttle = 0.0
-                        if area < TARGET_SIZE: throttle = 0.35
-                        elif area > (TARGET_SIZE + 0.1): throttle = -0.30
-                        
-                        steering = robot_cam.ai.track_error_x * 0.6
-                        robot_motor.move(throttle, steering)
+                        status_msg = (
+                            "waiting_color"
+                            if target_color == "none"
+                            else f"follow_{target_color}"
+                        )
+                        await websocket.send_text(json.dumps({
+                            "status": "active",
+                            "mode": status_msg
+                        }))
+
+            except asyncio.TimeoutError:
+                pass
+            except WebSocketDisconnect:
+                break
+
+            # ==========================================
+            # MAIN LOGIC
+            # ==========================================
+            if CURRENT_CONTROLLER == "recognition":
+
+                # -------------------------------
+                # A. GESTURE
+                # -------------------------------
+                if robot_cam.ai.mode == "gesture_recognition":
+                    fingers = robot_cam.ai.gesture_data
+
+                    if fingers == 1:
+                        robot_motor.move(0.25, 0.0, SPEED_LIMIT)
+                        last_throttle = 0.25
+                    elif fingers == 2:
+                        robot_motor.move(-0.25, 0.0, SPEED_LIMIT)
+                        last_throttle = -0.25
                     else:
-                        lost_counter += 1
-                        robot_motor.stop()
-                        if lost_counter < 40:
-                            scan_angle = int(math.sin(lost_counter * 0.2) * 60)
-                            await async_move_servo("pan", scan_angle)
+                        await active_brake()
+
+                # -------------------------------
+                # B. COLOR FOLLOW (VISION + HCSR)
+                # -------------------------------
+                elif robot_cam.ai.mode == "color_detection":
+
+                    distance_cm = robot_cam.ai.distance_val
+
+                    if robot_cam.ai.object_found:
+                        err_x = robot_cam.ai.track_error_x
+
+                        # ---- SERVO ----
+                        delta_pan = 0.0
+                        if abs(err_x) > SAFEZONE_X:
+                            calc = -(err_x * FOV_FACTOR)
+                            if abs(calc) >= MIN_STEP:
+                                delta_pan = calc
+
+                        if delta_pan != 0:
+                            pan_pos += delta_pan
+                            pan_pos = max(-90, min(90, pan_pos))
+                            await async_move_servo("pan", int(pan_pos))
+
+                        # ---- MOTOR ----
+                        if distance_cm is not None and distance_cm >= SAFE_DISTANCE_CM:
+                            robot_motor.move(
+                                MAX_THROTTLE,
+                                err_x * STEER_GAIN,
+                                SPEED_LIMIT
+                            )
+                            last_throttle = MAX_THROTTLE
                         else:
-                            await async_move_servo("pan", 0)
+                            await active_brake()
+
+                        robot_cam.ai.track_error_x = 0.0
+
+                    else:
+                        await active_brake()
+
                 else:
-                    robot_motor.stop()
+                    await active_brake()
 
             await asyncio.sleep(0.1)
 
-    except Exception: logger.exception("Recog Error")
+    except Exception:
+        logger.exception("Recog Error")
+
     finally:
-        robot_motor.stop()
+        sensor_running = False
+        sensor_task.cancel()
+        await active_brake()
+        pan_pos = 0
         await async_move_servo("pan", 0)
         robot_cam.ai.set_mode("off")
+        robot_cam.ai.show_safezone = False
+        robot_cam.ai.show_distance = False
+        robot_cam.ai.update_distance(None)
+        logger.info("RECOGNITION Disconnected")
+
 
 
 # 5. OBJECT DETECTION
@@ -526,6 +642,7 @@ async def ws_avoid(websocket: WebSocket):
     CURRENT_CONTROLLER = "avoid"
     
     robot_cam.ai.set_mode("off")
+    robot_cam.ai.show_distance = True
     logger.info("AVOID Connected - AGRESSIVE MODE")
     
     # --- SHARED DATA ---
@@ -733,7 +850,7 @@ async def ws_avoid(websocket: WebSocket):
             await asyncio.sleep(0.01)
     except Exception: logger.exception("[AVOID] Error")
     finally:
-        sensor_task.cancel(); robot_motor.stop(); robot_cam.ai.update_distance(None)
+        sensor_task.cancel(); robot_motor.stop(); robot_cam.ai.show_distance = False; robot_cam.ai.update_distance(None)
 
 
 # ==============================================================================

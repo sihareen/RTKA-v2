@@ -44,8 +44,8 @@ PIN_LINE_RR = 21
 # Set ke 0 atau None jika tidak ingin dipakai
 # --- PIN EMERGENCY / OBSTACLE (BFD Extras) ---
 # Sensor "Near" dan "Clap" pada modul BFD-1000
-PIN_BFD_NEAR = 8
-PIN_BFD_CLAP = 7
+PIN_BFD_NEAR = 11
+PIN_BFD_CLAP = 19
 
 # --- SAKLAR FITUR (FITUR BARU) ---
 # Ubah ke True jika kabel sensor sudah dipasang
