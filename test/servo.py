@@ -1,91 +1,61 @@
-from gpiozero import AngularServo, Device
-from gpiozero.pins.lgpio import LGPIOFactory
+import lgpio
 import time
+import csv
+from datetime import datetime
 
-# ==========================================
-# KONFIGURASI
-# ==========================================
-PIN_SERVO_TEST = 12  
-THRESHOLD_GERAK = 20  # Batas minimal agar servo mau gerak normal
+# ======================
+# CONFIG
+# ======================
+GPIO_CHIP = 0
+SERVO_PIN = 12
+FREQ = 50              # 50Hz servo
+PERIOD_US = 20000
+US_START = 500
+US_END = 2500
+US_STEP = 100
+DELAY = 0.09
+LOG_FILE = "servo_lgpio_log.csv"
 
-# ==========================================
-# SETUP FACTORY
-# ==========================================
-try:
-    factory = LGPIOFactory()
-    Device.pin_factory = factory
-except:
-    pass
+# ======================
+# INIT
+# ======================
+h = lgpio.gpiochip_open(GPIO_CHIP)
+lgpio.gpio_claim_output(h, SERVO_PIN)
 
-def main():
-    print("=== SERVO TUNER: SMART MOVE MODE ===")
-    print(f"Logic: Jika beda sudut < {THRESHOLD_GERAK}, gunakan 'Pancingan'")
-    print("Range: -90 s/d 90")
-    print("------------------------------------")
+def writeMicroseconds(us):
+    duty_cycle = (us / PERIOD_US) * 100.0
+    lgpio.tx_pwm(h, SERVO_PIN, FREQ, duty_cycle)
 
-    servo = AngularServo(
-        PIN_SERVO_TEST,
-        min_angle=-90, max_angle=90,
-        min_pulse_width=0.5/1000, max_pulse_width=2.5/1000
-    )
+# ======================
+# LOG FILE
+# ======================
+with open(LOG_FILE, "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["timestamp", "pulse_us", "delta_us"])
 
-    # Simpan posisi terakhir (anggap awal di 0)
-    current_angle = 0
-    servo.angle = 0
-    time.sleep(0.5)
+print("[INFO] LGPIO Servo Test START")
 
-    try:
-        while True:
-            print(f"\n[Posisi Sekarang: {current_angle}]")
-            raw = input("Target Sudut (-90 s/d 90): ")
-            if raw.lower() == 'q': break
-            
-            try:
-                target = float(raw)
-                if not (-90 <= target <= 90):
-                    print("Error: Di luar batas -90 s/d 90")
-                    continue
+# ======================
+# MAIN LOOP
+# ======================
+for us in range(US_START, US_END + 1, US_STEP):
+    writeMicroseconds(us)
 
-                diff = abs(target - current_angle)
+    ts = datetime.now().isoformat(timespec="milliseconds")
+    delta = us - 1500
 
-                # --- LOGIKA SMART MOVE ---
-                if diff > 0 and diff < THRESHOLD_GERAK:
-                    print(f" -> Jarak {diff} terlalu kecil (Rawan macet).")
-                    print(" -> Melakukan manuver 'Pancingan'...")
-                    
-                    # Tentukan arah pancingan (Jauhi batas fisik)
-                    # Jika target dekat batas atas (90), pancing ke bawah.
-                    # Jika target dekat batas bawah (-90), pancing ke atas.
-                    if target > 50:
-                        kick_val = target - 25 # Pancing mundur
-                    else:
-                        kick_val = target + 25 # Pancing maju
-                    
-                    # 1. Gerak ke posisi pancingan
-                    servo.angle = kick_val
-                    time.sleep(0.15) # Jeda sangat singkat
-                    
-                    # 2. Masuk ke target sebenarnya (sekarang momentum sudah ada)
-                    servo.angle = target
-                    print(f" -> Sampai di {target} (via {kick_val})")
+    print(f"{ts} | {us} us | Δ {delta:+}")
 
-                else:
-                    # Gerak Normal (Jarak jauh)
-                    print(f" -> Gerak Normal ke {target}")
-                    servo.angle = target
-                
-                # Update posisi
-                current_angle = target
-                time.sleep(0.5)
-                servo.detach() # Tetap detach biar adem
+    with open(LOG_FILE, "a", newline="") as f:
+        csv.writer(f).writerow([ts, us, delta])
 
-            except ValueError:
-                print("Input angka valid.")
+    time.sleep(DELAY)
 
-    except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        servo.close()
+# ======================
+# STOP
+# ======================
+lgpio.tx_pwm(h, SERVO_PIN, 0, 0)
+lgpio.gpiochip_close(h)
 
-if __name__ == "__main__":
-    main()
+print("[INFO] FINISHED")
+print(f"[INFO] Log saved: {LOG_FILE}")

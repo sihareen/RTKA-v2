@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>RTKAv2 Command Center</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         /* --- ROOT VARIABLES & BASIC SETUP --- */
         :root { 
@@ -68,6 +69,8 @@
             display: flex; justify-content: center; align-items: center; 
         }
         .col-center { flex-direction: column; gap: 10px; }
+        .col-action { flex-direction: column; gap: 10px; } /* Update layout kanan */
+
         .panel-box { 
             background: #2a2a2a; padding: 8px; border-radius: 8px; 
             border: 1px solid #444; width: 98%; box-sizing: border-box; 
@@ -119,7 +122,7 @@
 
         /* --- JOYSTICK UI --- */
         #zone { 
-            width: 150px; height: 150px; 
+            width: 140px; height: 140px; 
             background: rgba(255, 255, 255, 0.05); 
             border: 2px dashed #444; border-radius: 50%; position: relative; 
         }
@@ -129,6 +132,22 @@
             border: 2px solid var(--primary); border-radius: 50%; 
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
         }
+
+        /* --- SERVO D-PAD (NEW) --- */
+        .d-pad-grid {
+            display: grid;
+            grid-template-columns: 40px 40px 40px;
+            grid-template-rows: 40px 40px 40px;
+            gap: 5px;
+        }
+        .btn-pad {
+            width: 100%; height: 100%;
+            background: #333; border: 1px solid #555;
+            color: #ccc; border-radius: 5px;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+        }
+        .btn-pad:active { background: var(--primary); color: black; }
+        .btn-rst { background: #500; font-size: 0.7rem; }
     </style>
 </head>
 <body>
@@ -209,7 +228,7 @@
                 <button class="btn-ai" onclick="triggerAI('object_detection', this)">OBJECT</button>
                 <button class="btn-ai" onclick="triggerAI('face_detection', this)">FACE</button>
                 <button class="btn-ai" onclick="triggerAI('color_detection', this)">COLOR</button>
-                <button class="btn-ai" onclick="triggerAI('gesture_recognition', this)">GESTURE</button>
+                <button class="btn-ai" onclick="triggerAI('hand_tracking', this)">GESTURE</button>
             </div>
 
              <div id="panel-single" style="display:none; width:100%;">
@@ -230,7 +249,24 @@
     </div>
 
     <div class="col-action">
-        <button style="width:80px; height:80px; background:red; border-radius:50%; font-weight:bold; border:4px solid #500;" 
+        <div class="panel-box" style="display:flex; justify-content:center; align-items:center; flex-direction:column; padding:5px;">
+             <label style="font-size:0.7rem; color:#aaa; margin-bottom:5px;">CAM SERVO</label>
+             <div class="d-pad-grid">
+                <div></div>
+                <button class="btn-pad" onclick="moveServo('tilt', 5)"><i class="fa fa-angle-up"></i></button>
+                <div></div>
+
+                <button class="btn-pad" onclick="moveServo('pan', 5)"><i class="fa fa-angle-left"></i></button>
+                <button class="btn-pad btn-rst" onclick="resetServo()">RST</button>
+                <button class="btn-pad" onclick="moveServo('pan', -5)"><i class="fa fa-angle-right"></i></button>
+
+                <div></div>
+                <button class="btn-pad" onclick="moveServo('tilt', -5)"><i class="fa fa-angle-down"></i></button>
+                <div></div>
+             </div>
+        </div>
+
+        <button style="width:60px; height:60px; background:red; border-radius:50%; font-weight:bold; border:4px solid #500; font-size:0.7rem;" 
             onmousedown="sendJson({cmd:'buzzer', state:'on'})" 
             onmouseup="sendJson({cmd:'buzzer', state:'off'})">HORN</button>
     </div>
@@ -253,24 +289,19 @@
     const speedBox = document.getElementById('speed-box');
     const sysSwitch = document.getElementById('system-switch'); 
 
-    // --- SENSOR MASKING LOGIC (UPDATED: REAL-TIME) ---
-    // 1. Default Semua Mati (False)
+    // --- SENSOR MASKING LOGIC ---
     const activeSensors = { ll: false, l: false, m: false, r: false, rr: false };
 
     function toggleSensor(id) {
-        // Toggle Logic
         activeSensors[id] = !activeSensors[id];
-        
-        // Update UI Tombol
         const btn = document.getElementById('s-' + id);
         if (activeSensors[id]) btn.classList.add('active');
         else btn.classList.remove('active');
 
-        // [LIVE UPDATE] Kirim ke Python saat itu juga jika terhubung
         if (isConnected) {
             sendJson({ 
                 cmd: "set_ai_mode", 
-                mode: "avoid_hybrid", // Pastikan tetap di mode hybrid
+                mode: "avoid_hybrid", 
                 config: activeSensors
             });
         }
@@ -278,17 +309,13 @@
 
     function triggerLineAvoid(btnElement) {
         if (!isConnected) return alert("Connect first!");
-        
-        // Masuk ke Mode Hybrid (Default config = semua false/mati sampai user klik tombol kecil)
         sendJson({ 
             cmd: "set_ai_mode", 
             mode: "avoid_hybrid",
             config: activeSensors 
         });
-        
         highlightBtn(btnElement);
     }
-    // --------------------------------------------------
 
     function toggleMainConnect() {
         if (!isConnected) connectWebSocket();
@@ -319,7 +346,6 @@
             featureBox.style.display = "block";
             
             if (path === "/ws/avoid") document.getElementById('panel-avoid').style.display = "grid";
-            
             else if (path === "/ws/tracking") {
                 document.getElementById('panel-tracking').style.display = "grid";
                 const btnNone = document.getElementById('btn-track-none');
@@ -350,6 +376,7 @@
             modeDisplay.innerText = opMode.options[opMode.selectedIndex].text.toUpperCase();
             
             updateUI(path); 
+            // Cache buster untuk memaksa reload gambar
             camFeed.src = `http://${ip}:8000/video_feed?t=${new Date().getTime()}`;
             camFeed.style.display = "block";
             document.getElementById('placeholder-text').style.display = "none";
@@ -469,6 +496,29 @@
     knob.addEventListener('touchstart', (e) => { dragging = true; e.preventDefault(); });
     window.addEventListener('touchmove', (e) => { if(dragging) { e.preventDefault(); handleMove(e.touches[0].clientX, e.touches[0].clientY); } }, {passive: false});
     window.addEventListener('touchend', endMove);
+
+    // --- SERVO D-PAD LOGIC (NEW) ---
+    let panAngle = 0;
+    let tiltAngle = 0;
+
+    function moveServo(type, delta) {
+        if (type === 'pan') {
+            panAngle += delta;
+            panAngle = Math.max(-90, Math.min(90, panAngle));
+            sendJson({ cmd: 'servo', type: 'pan', angle: panAngle });
+        } else {
+            tiltAngle += delta; 
+            tiltAngle = Math.max(-90, Math.min(90, tiltAngle));
+            sendJson({ cmd: 'servo', type: 'tilt', angle: tiltAngle });
+        }
+    }
+
+    function resetServo() {
+        panAngle = 0;
+        tiltAngle = 0;
+        sendJson({ cmd: 'servo', type: 'pan', angle: 0 });
+        setTimeout(() => sendJson({ cmd: 'servo', type: 'tilt', angle: 0 }), 100);
+    }
 </script>
 </body>
 </html>

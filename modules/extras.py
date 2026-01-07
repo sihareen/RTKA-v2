@@ -1,8 +1,10 @@
-from gpiozero import PWMOutputDevice, AngularServo, LED, Device
+from rpi_hardware_pwm import HardwarePWM
+from gpiozero import PWMOutputDevice, LED, Device
 from gpiozero.pins.lgpio import LGPIOFactory
 import time
 import threading
 import math
+import os
 from config import *
 from modules.config_loader import cfg_mgr
 
@@ -10,8 +12,7 @@ from modules.config_loader import cfg_mgr
 try:
     factory = LGPIOFactory()
     Device.pin_factory = factory
-except:
-    pass 
+except: pass 
 
 # =========================
 # DATABASE LAGU & NADA
@@ -29,143 +30,135 @@ SONGS = {
 
 class ExtraDrivers:
     def __init__(self):
-        # 1. INIT PINS
+        # 1. INIT PINS BUZZER
         pin_buzzer = cfg_mgr.get_pin("buzzer", "pin", PIN_BUZZER)
-        pin_pan = cfg_mgr.get_pin("servo", "pan_pin", PIN_SERVO_PAN)
-        pin_tilt = cfg_mgr.get_pin("servo", "tilt_pin", PIN_SERVO_TILT)
-
-        print(f"[EXTRAS] Init. Buzzer:{pin_buzzer}, Pan:{pin_pan}, Tilt:{pin_tilt}")
-        
+        print(f"[EXTRAS] Init. Buzzer:{pin_buzzer}")
         try:
             self.buzzer = PWMOutputDevice(pin_buzzer, initial_value=0, frequency=440)
         except: self.buzzer = None
 
+        # 2. INIT SERVO (HARDWARE PWM)
+        # Sesuai data Anda:
+        # Channel 0 = GPIO 12 (Pan)
+        # Channel 1 = GPIO 13 (Tilt)
+        
+        # DETEKSI OTOMATIS CHIP (Khusus RPi 5)
+        # RPi 5 sering menggunakan pwmchip2 untuk GPIO, RPi 4 pwmchip0
+        target_chip = 0
+        if os.path.exists("/sys/class/pwm/pwmchip2"):
+            target_chip = 2 # Kemungkinan RPi 5
+            print("[EXTRAS] Deteksi RPi 5 (Using pwmchip2)")
+        
         try:
-            # KONFIGURASI SERVO (SESUAI TEMUAN TUNING)
-            # Range: -90 s/d 90
-            self.servo_pan = AngularServo(
-                pin_pan, 
-                min_angle=-90, max_angle=90, 
-                min_pulse_width=0.5/1000, 
-                max_pulse_width=2.5/1000
-            )
-            self.servo_tilt = AngularServo(
-                pin_tilt, 
-                min_angle=-90, max_angle=90, 
-                min_pulse_width=0.5/1000, 
-                max_pulse_width=2.5/1000
-            )
+            # Init PWM Channel 0 (Pan - GPIO 12)
+            self.pwm_pan = HardwarePWM(pwm_channel=0, hz=50, chip=target_chip)
+            self.pwm_pan.start(0) 
+
+            # Init PWM Channel 1 (Tilt - GPIO 13)
+            self.pwm_tilt = HardwarePWM(pwm_channel=1, hz=50, chip=target_chip)
+            self.pwm_tilt.start(0) 
             
-            # Simpan posisi terakhir
             self.last_pan_angle = 0
             self.last_tilt_angle = 0
             
-            # Reset ke Tengah saat booting
-            self.servo_pan.angle = 0
-            self.servo_tilt.angle = 0
+            # Reset ke Tengah
+            self.move_servo("pan", 0)
+            self.move_servo("tilt", 0)
             time.sleep(0.5)
             self.detach_servos()
-            print("[EXTRAS] Servos Ready (Micro-Overshoot Mode)")
+            
+            print(f"[EXTRAS] Hardware PWM Ready (Ch0 & Ch1 on Chip {target_chip})")
             
         except Exception as e:
-            print(f"[EXTRAS] Error Servo: {e}")
-            self.servo_pan = None
-            self.servo_tilt = None
+            print(f"[EXTRAS] Error Hardware PWM: {e}")
+            print("TIPS: Cek overlay di /boot/firmware/config.txt -> dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4")
+            self.pwm_pan = None
+            self.pwm_tilt = None
 
-        # 2. INIT LED
+        # 3. INIT LED
         p_r = cfg_mgr.get_pin("led", "r", PIN_LED_R)
         p_y = cfg_mgr.get_pin("led", "y", PIN_LED_Y)
         p_g = cfg_mgr.get_pin("led", "g", PIN_LED_G)
 
         try:
-            self.led_r = LED(p_r)
-            self.led_y = LED(p_y)
-            self.led_g = LED(p_g)
+            self.led_r = LED(p_r); self.led_y = LED(p_y); self.led_g = LED(p_g)
         except:
             self.led_r = None; self.led_y = None; self.led_g = None
 
     def close(self):
         if self.buzzer: self.buzzer.close()
-        if self.servo_pan: self.servo_pan.close()
-        if self.servo_tilt: self.servo_tilt.close()
+        if self.pwm_pan: self.pwm_pan.stop() 
+        if self.pwm_tilt: self.pwm_tilt.stop()
         if self.led_r: self.led_r.close()
         if self.led_y: self.led_y.close()
         if self.led_g: self.led_g.close()
 
     def detach_servos(self):
-        """Mematikan sinyal servo total"""
-        if self.servo_pan: self.servo_pan.detach()
-        if self.servo_tilt: self.servo_tilt.detach()
+        if self.pwm_pan: self.pwm_pan.change_duty_cycle(0)
+        if self.pwm_tilt: self.pwm_tilt.change_duty_cycle(0)
+
+    def _angle_to_duty(self, angle):
+        """
+        Konversi Sudut (-90 s/d 90) ke Duty Cycle Hardware PWM (%).
+        -90 deg = 2.5% duty (0.5ms)
+          0 deg = 7.5% duty (1.5ms)
+         90 deg = 12.5% duty (2.5ms)
+        """
+        angle = max(-90, min(90, angle))
+        duty = 7.5 + (angle / 90.0) * 5.0
+        return duty
 
     # ==========================================================
-    # 1. MOVE SERVO (REVISI: MICRO-OVERSHOOT)
+    # 1. MOVE SERVO (HARDWARE PWM)
+    # ==========================================================
+    # ==========================================================
+    # 1. MOVE SERVO (HARDWARE PWM - SOFT TUNED)
     # ==========================================================
     def move_servo(self, type, angle):
-        """
-        Menggerakkan servo dengan logika 'Micro-Overshoot'.
-        Hanya 'melebihkan' sedikit (5-8 derajat) agar tidak macet,
-        tapi tidak terlalu kasar.
-        """
         angle = int(max(-90, min(90, angle)))
         
-        target_servo = None
+        target_pwm = None
         last_angle = 0
         
-        if type == "pan" and self.servo_pan:
-            target_servo = self.servo_pan
+        if type == "pan" and self.pwm_pan:
+            target_pwm = self.pwm_pan
             last_angle = self.last_pan_angle
-        elif type == "tilt" and self.servo_tilt:
-            target_servo = self.servo_tilt
+        elif type == "tilt" and self.pwm_tilt:
+            target_pwm = self.pwm_tilt
             last_angle = self.last_tilt_angle
             
-        if target_servo:
+        if target_pwm:
             diff = abs(angle - last_angle)
             
-            # 1. Deadzone: Jika perubahan < 3 derajat, abaikan saja.
-            # Ini mencegah servo 'menggigil' tidak perlu.
-            if diff < 3:
-                return 
+            # Deadzone: Abaikan pergerakan < 2 derajat (dikurangi dari 3)
+            # Hardware PWM presisi, jadi kita bisa lebih sensitif
+            if diff < 2: return 
 
-            # 2. Ambang Batas Macet (Stiction)
-            # Jika pergerakan antara 3 s/d 15 derajat, servo rentan macet.
-            THRESHOLD_MACET = 15  
-            MICRO_KICK = 6  # Cukup 6 derajat tambahannya (sebelumnya 30!)
+            # --- SOFT TUNING ---
+            # Karena Hardware PWM kuat, kita kurangi pancingannya.
+            THRESHOLD_MACET = 3   # Turun dari 15 ke 8
+            MICRO_KICK = 0        # Turun drastis dari 6 ke 2
 
             if diff < THRESHOLD_MACET:
-                # --- LOGIKA MICRO-OVERSHOOT ---
-                # Kita targetkan sedikit LEBIH JAUH dari tujuan asli
-                # agar momentum cukup, lalu koreksi balik.
+                # Logika Pancingan Halus (Hanya ditambah 2 derajat)
+                overshoot_angle = 0
+                if angle > last_angle: overshoot_angle = angle + MICRO_KICK
+                else: overshoot_angle = angle - MICRO_KICK
                 
-                overshoot_pos = 0
-                
-                # Cek arah gerak:
-                if angle > last_angle: 
-                    # Sedang bergerak ke arah Positif (+)
-                    overshoot_pos = angle + MICRO_KICK
-                else: 
-                    # Sedang bergerak ke arah Negatif (-)
-                    overshoot_pos = angle - MICRO_KICK
-                
-                # Pastikan overshoot tidak menabrak batas fisik -90/90
-                overshoot_pos = max(-90, min(90, overshoot_pos))
+                overshoot_angle = max(-90, min(90, overshoot_angle))
 
-                # Step A: Gerak ke posisi lebih (Pancingan Halus)
-                target_servo.angle = overshoot_pos
-                time.sleep(0.05) # Jeda sangat cepat
+                target_pwm.change_duty_cycle(self._angle_to_duty(overshoot_angle))
+                time.sleep(0.05) 
                 
-                # Step B: Koreksi ke posisi asli
-                target_servo.angle = angle
-                time.sleep(0.15) # Tunggu stabil
-
+                target_pwm.change_duty_cycle(self._angle_to_duty(angle))
+                time.sleep(0.10) # Waktu tunggu dipercepat
             else:
-                # --- LOGIKA NORMAL (Jarak Jauh) ---
-                # Jika jarak > 15 derajat, momentum sudah cukup besar.
-                # Tidak perlu pancingan.
-                target_servo.angle = angle
-                time.sleep(0.2) 
+                # Gerakan Normal
+                target_pwm.change_duty_cycle(self._angle_to_duty(angle))
+                time.sleep(0.15) # Waktu tunggu dipercepat
 
             # Matikan sinyal (Detach)
-            target_servo.detach()
+            target_pwm.change_duty_cycle(0)
             
             # Simpan posisi
             if type == "pan": self.last_pan_angle = angle
@@ -175,21 +168,20 @@ class ExtraDrivers:
     # 2. SWIPE MOVE
     # ==========================================================
     def swipe_move(self, type, target_angle, duration=1.0, fps=50):
-        target_servo = None
+        target_pwm = None
         start_angle = 0
         
-        if type == "pan" and self.servo_pan:
-            target_servo = self.servo_pan
+        if type == "pan" and self.pwm_pan:
+            target_pwm = self.pwm_pan
             start_angle = self.last_pan_angle
-        elif type == "tilt" and self.servo_tilt:
-            target_servo = self.servo_tilt
+        elif type == "tilt" and self.pwm_tilt:
+            target_pwm = self.pwm_tilt
             start_angle = self.last_tilt_angle
             
-        if target_servo is None: return
+        if target_pwm is None: return
 
         target_angle = max(-90, min(90, target_angle))
         
-        # Jika jarak dekat, gunakan move_servo biasa agar aman dari macet
         if abs(target_angle - start_angle) < 15:
             self.move_servo(type, target_angle)
             return
@@ -200,23 +192,22 @@ class ExtraDrivers:
             eased = (1 - math.cos(math.pi * t)) / 2
             current_angle = start_angle + (target_angle - start_angle) * eased
             
-            target_servo.angle = current_angle
+            target_pwm.change_duty_cycle(self._angle_to_duty(current_angle))
             time.sleep(1 / fps)
             
-        target_servo.angle = target_angle
+        target_pwm.change_duty_cycle(self._angle_to_duty(target_angle))
         time.sleep(0.1)
-        target_servo.detach()
+        target_pwm.change_duty_cycle(0) 
         
         if type == "pan": self.last_pan_angle = target_angle
         else: self.last_tilt_angle = target_angle
 
-    # --- LED & BUZZER ---
+    # --- LED & BUZZER (SAMA SEPERTI SEBELUMNYA) ---
     def set_led(self, color, state):
         target = None
         if color == "r": target = self.led_r
         elif color == "y": target = self.led_y
         elif color == "g": target = self.led_g
-        
         if target:
             if state == "on" or state == 1: target.on()
             else: target.off()
@@ -224,10 +215,8 @@ class ExtraDrivers:
     def set_buzzer(self, state):
         if self.buzzer is None: return
         if state == "on":
-            self.buzzer.frequency = 2000 
-            self.buzzer.value = 0.5      
-        else:
-            self.buzzer.off()
+            self.buzzer.frequency = 2000; self.buzzer.value = 0.5      
+        else: self.buzzer.off()
 
     def _play_worker(self, song_name):
         if self.buzzer is None: return
@@ -235,13 +224,9 @@ class ExtraDrivers:
         for note, duration in zip(notes, durations):
             freq = NOTES.get(note, 0)
             if freq > 0:
-                self.buzzer.frequency = freq
-                self.buzzer.value = 0.5 
-            else:
-                self.buzzer.off()
-            time.sleep(duration)
-            self.buzzer.off()
-            time.sleep(0.05) 
+                self.buzzer.frequency = freq; self.buzzer.value = 0.5 
+            else: self.buzzer.off()
+            time.sleep(duration); self.buzzer.off(); time.sleep(0.05) 
         self.buzzer.off()
 
     def play_melody(self, song_name):

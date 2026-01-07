@@ -42,8 +42,15 @@ PIN_LINE_M = 15
 PIN_LINE_R = 18
 PIN_LINE_RR = 21
 # Set ke 0 atau None jika tidak ingin dipakai
-PIN_BFD_NEAR = 11  # Sensor Proximity (IR Depan)
-PIN_BFD_CLAP = 19  # Sensor Tabrak (Switch Fisik)
+# --- PIN EMERGENCY / OBSTACLE (BFD Extras) ---
+# Sensor "Near" dan "Clap" pada modul BFD-1000
+PIN_BFD_NEAR = 11
+PIN_BFD_CLAP = 19
+
+# --- SAKLAR FITUR (FITUR BARU) ---
+# Ubah ke True jika kabel sensor sudah dipasang
+# Ubah ke False jika kabel dicabut (agar robot tidak panik sendiri)
+USE_BFD_SENSOR = False
 
 
 PIN_LED_R = 7   # Red
