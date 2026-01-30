@@ -1,0 +1,39 @@
+[2026-01-30 10:37:51,702] INFO: Starting Raspbot RTKAv2...
+[2026-01-30 10:37:51,838] INFO: HC-SR04 Initialized (T:26, E:20)
+[2026-01-30 10:37:51,840] INFO: Emergency Sensors Initialized
+[2026-01-30 10:37:51,840] INFO: Hardware initialized successfully.
+[2026-01-30 10:37:52,978] INFO: MANUAL Connected
+[2026-01-30 10:37:55,339] INFO: MANUAL Connected
+[2026-01-30 10:40:20,231] INFO: MANUAL Connected
+[2026-01-30 10:44:54,861] INFO: MANUAL Connected
+[2026-01-30 10:47:00,230] INFO: Shutting down...
+[2026-01-30 10:47:05,653] INFO: Starting Raspbot RTKAv2...
+[2026-01-30 10:47:06,172] INFO: HC-SR04 Initialized (T:26, E:20)
+[2026-01-30 10:47:06,173] INFO: Emergency Sensors Initialized
+[2026-01-30 10:47:06,174] INFO: Hardware initialized successfully.
+[2026-01-30 10:47:12,496] INFO: MANUAL Connected
+[2026-01-30 10:47:23,588] INFO: Shutting down...
+[2026-01-30 10:48:00,424] INFO: Starting Raspbot RTKAv2...
+[2026-01-30 10:48:00,942] INFO: HC-SR04 Initialized (T:26, E:20)
+[2026-01-30 10:48:00,944] INFO: Emergency Sensors Initialized
+[2026-01-30 10:48:00,944] INFO: Hardware initialized successfully.
+[2026-01-30 10:50:10,624] INFO: MANUAL Connected
+[2026-01-30 10:50:48,033] INFO: Shutting down...
+[2026-01-30 10:51:29,242] INFO: Starting Raspbot RTKAv2...
+[2026-01-30 10:51:29,773] INFO: HC-SR04 Initialized (T:26, E:20)
+[2026-01-30 10:51:29,775] INFO: Emergency Sensors Initialized
+[2026-01-30 10:51:29,776] INFO: Hardware initialized successfully.
+[2026-01-30 10:51:47,998] INFO: Shutting down...
+[2026-01-30 11:10:15,383] INFO: Starting Raspbot RTKAv2...
+[2026-01-30 11:10:15,906] INFO: HC-SR04 Initialized (T:26, E:20)
+[2026-01-30 11:10:15,908] INFO: Emergency Sensors Initialized
+[2026-01-30 11:10:15,908] INFO: Hardware initialized successfully.
+[2026-01-30 11:12:00,324] INFO: MANUAL Connected
+[2026-01-30 11:13:20,282] INFO: MANUAL Connected
+[2026-01-30 11:14:30,037] INFO: Shutting down...
+[2026-01-30 11:22:36,084] INFO: Starting Raspbot RTKAv2...
+[2026-01-30 11:22:36,606] INFO: HC-SR04 Initialized (T:26, E:20)
+[2026-01-30 11:22:36,608] INFO: Emergency Sensors Initialized
+[2026-01-30 11:22:36,608] INFO: Hardware initialized successfully.
+[2026-01-30 11:22:36,997] INFO: MANUAL Connected
+[2026-01-30 11:22:57,930] INFO: Shutting down...
