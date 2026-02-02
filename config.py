@@ -20,15 +20,15 @@ PIN_RL_FWD = 22
 PIN_RL_BWD = 23
 
 # SISI KANAN (Driver 2) - GPIO 10, 25, 16, 9 (UPDATED: GPIO aman tanpa pull-up)
-PIN_FR_FWD = 10  # Diganti dari 24 (motor tidak jalan)
+PIN_FR_FWD = 10
 PIN_FR_BWD = 25
-PIN_RR_FWD = 16  # Ditukar dengan BWD (motor terbalik)
-PIN_RR_BWD = 9   # GPIO 9 aman (pn | lo)
+PIN_RR_FWD = 16
+PIN_RR_BWD = 9
 
 # --- EXTRAS (SERVO & BUZZER) ---
 PIN_SERVO_PAN = 12   # Servo Geleng (Kiri-Kanan)
 PIN_SERVO_TILT = 13  # Servo Angguk (Atas-Bawah)
-PIN_BUZZER = 1       # Buzzer Aktif (Diperbaiki dari 116 - GPIO tidak valid)
+PIN_BUZZER = 16
 
 # --- ULTRASONIC (HC-SR04)---
 PIN_HCSR_TRIG = 26
@@ -55,4 +55,4 @@ USE_BFD_SENSOR = False
 
 PIN_LED_R = 7   # Red
 PIN_LED_Y = 8   # Yellow
-PIN_LED_G = 24  # Green (Dipindah dari 9, konflik dengan motor)
+PIN_LED_G = 24  # Green 
