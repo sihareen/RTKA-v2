@@ -1,9 +1,0 @@
-[2026-02-02 10:43:21,099] INFO: Starting Raspbot RTKAv2...
-[2026-02-02 10:43:21,720] INFO: HC-SR04 Initialized (T:26, E:20)
-[2026-02-02 10:43:21,722] INFO: Emergency Sensors Initialized
-[2026-02-02 10:43:21,722] INFO: Hardware initialized successfully.
-[2026-02-02 10:46:44,687] INFO: MANUAL Connected
-[2026-02-02 10:49:20,941] INFO: MANUAL Connected
-[2026-02-02 10:49:25,840] INFO: MANUAL Connected
-[2026-02-02 10:49:29,743] INFO: AVOID Connected - AGRESSIVE MODE
-[2026-02-02 10:49:56,268] INFO: MANUAL Connected
