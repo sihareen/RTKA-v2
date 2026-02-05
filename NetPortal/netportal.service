@@ -1,0 +1,17 @@
+[Unit]
+Description=RTKA NetPortal Wi-Fi Manager
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi/RTKAv2/NetPortal
+ExecStart=/usr/bin/python3 /home/pi/RTKAv2/NetPortal/wifi_manager.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/home/pi/RTKAv2/NetPortal/logs/portal.log
+StandardError=append:/home/pi/RTKAv2/NetPortal/logs/portal.log
+
+[Install]
+WantedBy=multi-user.target
