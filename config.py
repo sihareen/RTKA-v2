@@ -19,16 +19,16 @@ PIN_FL_BWD = 27
 PIN_RL_FWD = 22
 PIN_RL_BWD = 23
 
-# SISI KANAN (Driver 2) - GPIO 24, 25, 5, 6
-PIN_FR_FWD = 24
+# SISI KANAN (Driver 2) - GPIO 10, 25, 16, 9 (UPDATED: GPIO aman tanpa pull-up)
+PIN_FR_FWD = 10
 PIN_FR_BWD = 25
-PIN_RR_FWD = 5
-PIN_RR_BWD = 6
+PIN_RR_FWD = 16
+PIN_RR_BWD = 9
 
 # --- EXTRAS (SERVO & BUZZER) ---
 PIN_SERVO_PAN = 12   # Servo Geleng (Kiri-Kanan)
 PIN_SERVO_TILT = 13  # Servo Angguk (Atas-Bawah)
-PIN_BUZZER = 16      # Buzzer Aktif
+PIN_BUZZER = 16
 
 # --- ULTRASONIC (HC-SR04)---
 PIN_HCSR_TRIG = 26
@@ -55,4 +55,4 @@ USE_BFD_SENSOR = False
 
 PIN_LED_R = 7   # Red
 PIN_LED_Y = 8   # Yellow
-PIN_LED_G = 9  # Green
+PIN_LED_G = 24  # Green 
