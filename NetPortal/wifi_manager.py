@@ -63,7 +63,7 @@ CONNECT_TIMEOUT_SEC = env_int("RTKA_CONNECT_TIMEOUT", 25)
 SCAN_WINDOW_SEC = env_int("RTKA_SCAN_WINDOW_SEC", 10)
 SCAN_STEP_SEC = env_float("RTKA_SCAN_STEP_SEC", 2.0)
 MONITOR_INTERVAL_SEC = env_float("RTKA_MONITOR_INTERVAL_SEC", 3.0)
-time.sleep(0.5)  # Beri waktu config ditulis ke disktime.sleep(0.5)  # Beri waktu config ditulis ke disktime.sleep(0.5)  # Beri waktu config ditulis ke disktime.sleep(0.5)  # Beri waktu config ditulis ke disktime.sleep(0.5)  # Beri waktu config ditulis ke disk_IP_OCTET = env_int("RTKA_PREFERRED_IP_OCTET", 101)
+PREFERRED_IP_OCTET = env_int("RTKA_PREFERRED_IP_OCTET", 101)
 LOCK_FILE = os.getenv("RTKA_LOCK_FILE", "/tmp/netportal_wifi_manager.lock")
 
 
