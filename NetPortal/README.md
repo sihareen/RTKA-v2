@@ -37,7 +37,7 @@ sudo systemctl status netportal.service
 - `RTKA_WIFI_IFACE` (default: `wlan0`)
 - `RTKA_AP_NAME` (default: `EdupiRobo_AP`)
 - `RTKA_AP_SSID` (default: `EdupiRobo_AP`)
-- `RTKA_AP_PASSWORD` (default: kosong/open AP)
+- `RTKA_AP_PASSWORD` (default: 'edupi888')
 - `RTKA_AP_IPV4` (default: `192.168.1.101/24`)
 - `RTKA_PORTAL_PORT` (default: `80`)
 - `RTKA_CONNECT_TIMEOUT` (default: `25` detik)

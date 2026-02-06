@@ -63,7 +63,7 @@ CONNECT_TIMEOUT_SEC = env_int("RTKA_CONNECT_TIMEOUT", 25)
 SCAN_WINDOW_SEC = env_int("RTKA_SCAN_WINDOW_SEC", 10)
 SCAN_STEP_SEC = env_float("RTKA_SCAN_STEP_SEC", 2.0)
 MONITOR_INTERVAL_SEC = env_float("RTKA_MONITOR_INTERVAL_SEC", 3.0)
-PREFERRED_IP_OCTET = env_int("RTKA_PREFERRED_IP_OCTET", 101)
+time.sleep(0.5)  # Beri waktu config ditulis ke disktime.sleep(0.5)  # Beri waktu config ditulis ke disktime.sleep(0.5)  # Beri waktu config ditulis ke disktime.sleep(0.5)  # Beri waktu config ditulis ke disktime.sleep(0.5)  # Beri waktu config ditulis ke disk_IP_OCTET = env_int("RTKA_PREFERRED_IP_OCTET", 101)
 LOCK_FILE = os.getenv("RTKA_LOCK_FILE", "/tmp/netportal_wifi_manager.lock")
 
 
@@ -523,6 +523,7 @@ def apply_preferred_ip_policy(conn_name: str) -> None:
     snapshot = get_connection_ipv4_snapshot(conn_name)
     dns_value = ",".join(dns_list) if dns_list else gateway
     set_state(event=f"Trying static IP {target_ip}")
+    logger.info("Attempting to set static IP %s (from %s)", target_ip, current_ip)
 
     cp = nmcli(
         [
@@ -540,21 +541,37 @@ def apply_preferred_ip_policy(conn_name: str) -> None:
         ]
     )
     if cp.returncode != 0:
-        logger.warning("Static IP modify failed, keep DHCP")
+        logger.warning("Static IP modify failed, keep DHCP: %s", cp.stderr.strip())
         return
+
+    # Wait for config to be written
+    time.sleep(0.5)
 
     cp = nmcli(["connection", "up", conn_name], timeout=CONNECT_TIMEOUT_SEC + 5)
     if cp.returncode != 0:
+        logger.warning("Connection up failed after static IP config: %s", cp.stderr.strip())
         restore_connection_ipv4(conn_name, snapshot)
         set_state(event="Static IP failed, reverted to DHCP/profile")
         return
 
-    time.sleep(1.2)
-    verify = get_device_ipv4_context()
-    if verify and str(verify.get("ip", "")).strip() == target_ip:
-        set_state(event=f"Connected with static IP {target_ip}", error="")
-        return
+    # Enhanced verification with retry (NetworkManager needs time to apply changes)
+    max_retries = 5
+    retry_delay = 1.5
+    for attempt in range(1, max_retries + 1):
+        time.sleep(retry_delay)
+        verify = get_device_ipv4_context()
+        if verify:
+            actual_ip = str(verify.get("ip", "")).strip()
+            logger.info("Verification attempt %s/%s: IP is %s (target: %s)", attempt, max_retries, actual_ip, target_ip)
+            if actual_ip == target_ip:
+                logger.info("Static IP %s successfully applied!", target_ip)
+                set_state(event=f"Connected with static IP {target_ip}", error="")
+                return
+        else:
+            logger.warning("Verification attempt %s/%s: No IP context available", attempt, max_retries)
 
+    # All retries failed, rollback
+    logger.warning("Static IP verification failed after %s attempts, rolling back to DHCP", max_retries)
     restore_connection_ipv4(conn_name, snapshot)
     set_state(event="Static IP failed, using DHCP/profile")
 
@@ -783,20 +800,137 @@ def html_page() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>EdupiRobo Wi-Fi Portal</title>
   <style>
-    :root {{ --bg:#f4f7fb; --card:#fff; --ink:#12324a; --muted:#60758b; --accent:#0b7fab; --danger:#c03a2b; --line:#dde6ef; }}
-    body {{ font-family:"Segoe UI",Tahoma,sans-serif; margin:0; background:var(--bg); color:var(--ink); }}
-    .wrap {{ max-width:980px; margin:20px auto; padding:16px; }}
-    .card {{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }}
-    h1 {{ margin:0 0 10px; font-size:24px; }}
-    .meta {{ color:var(--muted); font-size:14px; }}
-    .err {{ color:var(--danger); }}
-    table {{ width:100%; border-collapse:collapse; margin-top:10px; }}
-    th,td {{ border-bottom:1px solid var(--line); text-align:left; padding:8px; font-size:14px; }}
-    input,button {{ padding:10px; border-radius:10px; border:1px solid #c8d7e4; }}
-    input {{ width:100%; box-sizing:border-box; margin:6px 0; }}
-    button {{ cursor:pointer; background:var(--accent); color:#fff; border:none; }}
-    .row {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
-    @media (max-width:700px) {{ .row {{ grid-template-columns:1fr; }} }}
+    :root {{ 
+      --bg-start: #e3f2fd; 
+      --bg-end: #bbdefb; 
+      --card: #ffffff; 
+      --ink: #0d47a1; 
+      --muted: #1976d2; 
+      --accent: #2196f3; 
+      --accent-hover: #1976d2;
+      --danger: #f44336; 
+      --line: #bbdefb; 
+      --shadow: rgba(33, 150, 243, 0.1);
+    }}
+    body {{ 
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; 
+      margin: 0; 
+      background: linear-gradient(135deg, var(--bg-start) 0%, var(--bg-end) 100%);
+      background-attachment: fixed;
+      color: var(--ink); 
+      min-height: 100vh;
+    }}
+    .wrap {{ 
+      max-width: 980px; 
+      margin: 20px auto; 
+      padding: 16px; 
+    }}
+    .card {{ 
+      background: var(--card); 
+      border: 1px solid var(--line); 
+      border-radius: 16px; 
+      padding: 24px; 
+      margin-bottom: 16px; 
+      box-shadow: 0 4px 12px var(--shadow);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }}
+    .card:hover {{
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px var(--shadow);
+    }}
+    h1 {{ 
+      margin: 0 0 12px; 
+      font-size: 28px; 
+      color: var(--ink);
+      font-weight: 600;
+    }}
+    h3 {{
+      color: var(--ink);
+      font-weight: 600;
+      margin-top: 0;
+    }}
+    .meta {{ 
+      color: var(--muted); 
+      font-size: 14px; 
+      line-height: 1.6;
+    }}
+    .meta b {{
+      color: var(--ink);
+    }}
+    .err {{ 
+      color: var(--danger); 
+    }}
+    table {{ 
+      width: 100%; 
+      border-collapse: collapse; 
+      margin-top: 12px; 
+    }}
+    th, td {{ 
+      border-bottom: 1px solid var(--line); 
+      text-align: left; 
+      padding: 12px 8px; 
+      font-size: 14px; 
+    }}
+    th {{
+      background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+      color: var(--ink);
+      font-weight: 600;
+    }}
+    tr:hover {{
+      background: #f5f5f5;
+    }}
+    input, button {{ 
+      padding: 12px 16px; 
+      border-radius: 12px; 
+      border: 1px solid var(--line); 
+      font-size: 14px;
+      transition: all 0.2s;
+    }}
+    input {{ 
+      width: 100%; 
+      box-sizing: border-box; 
+      margin: 6px 0; 
+      background: #fafafa;
+    }}
+    input:focus {{
+      outline: none;
+      border-color: var(--accent);
+      background: #ffffff;
+      box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
+    }}
+    button {{ 
+      cursor: pointer; 
+      background: var(--accent); 
+      color: #fff; 
+      border: none; 
+      font-weight: 500;
+      box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
+    }}
+    button:hover {{
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(33, 150, 243, 0.4);
+    }}
+    button:active {{
+      transform: translateY(0);
+    }}
+    .row {{ 
+      display: grid; 
+      grid-template-columns: 1fr 1fr; 
+      gap: 12px; 
+    }}
+    label {{
+      display: block;
+      color: var(--ink);
+      font-weight: 500;
+      margin-bottom: 4px;
+    }}
+    @media (max-width: 700px) {{ 
+      .wrap {{ padding: 12px; }}
+      .card {{ padding: 16px; }}
+      .row {{ grid-template-columns: 1fr; }} 
+      h1 {{ font-size: 24px; }}
+    }}
   </style>
   <script>
     function pickSsid(v) {{
