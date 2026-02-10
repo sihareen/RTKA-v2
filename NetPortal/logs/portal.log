@@ -1983,3 +1983,143 @@ Petunjuk: Gunakan 'journalctl -xe NM_CONNECTION=c44f6724-4ab6-4f78-aebe-b8ea5c31
 2026-02-09 16:54:49,105 [INFO] AP disabled
 2026-02-09 16:54:55,333 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
 2026-02-09 16:54:55,333 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 08:35:46,021 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 08:35:46,021 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 08:35:46,038 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 08:35:46,038 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 08:36:00,007 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 08:36:00,007 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 08:36:01,160 [INFO] AP active: EdupiRobo_AP
+2026-02-10 08:36:01,160 [INFO] AP active: EdupiRobo_AP
+2026-02-10 08:36:01,162 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 08:36:01,162 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 08:36:05,679 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 08:36:05,679 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 08:36:05,967 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 08:36:05,967 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 08:36:05,980 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 08:36:05,980 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 08:36:08,608 [INFO] AP disabled
+2026-02-10 08:36:08,608 [INFO] AP disabled
+2026-02-10 08:36:11,048 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 08:36:11,048 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 08:49:25,876 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 08:49:25,876 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 08:49:25,894 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 08:49:25,894 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 08:49:39,742 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 08:49:39,742 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 08:49:40,896 [INFO] AP active: EdupiRobo_AP
+2026-02-10 08:49:40,896 [INFO] AP active: EdupiRobo_AP
+2026-02-10 08:49:40,899 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 08:49:40,899 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 08:49:51,562 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 08:49:51,562 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 08:49:51,900 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 08:49:51,900 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 08:49:51,909 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 08:49:51,909 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 08:49:54,412 [INFO] AP disabled
+2026-02-10 08:49:54,412 [INFO] AP disabled
+2026-02-10 08:49:57,468 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 08:49:57,468 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:18:45,269 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:18:45,269 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:18:45,280 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:18:45,280 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:18:59,084 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:18:59,084 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:19:00,237 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:19:00,237 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:19:00,240 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:19:00,240 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:19:52,174 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:19:52,174 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:19:52,431 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:19:52,431 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:19:52,443 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:19:52,443 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:19:54,955 [INFO] AP disabled
+2026-02-10 09:19:54,955 [INFO] AP disabled
+2026-02-10 09:20:01,133 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:20:01,133 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:25:43,712 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:25:43,712 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:25:43,726 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:25:43,726 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:25:57,576 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:25:57,576 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:25:58,735 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:25:58,735 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:25:58,738 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:25:58,738 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:26:47,668 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:26:47,668 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:26:47,987 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:26:47,987 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:26:48,028 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:26:48,028 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:26:50,694 [INFO] AP disabled
+2026-02-10 09:26:50,694 [INFO] AP disabled
+2026-02-10 09:26:56,907 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:26:56,907 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:29:10,469 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:29:10,469 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:29:10,476 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:29:10,476 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:29:24,199 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:29:24,199 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:29:25,357 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:29:25,357 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:29:25,358 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:29:25,358 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:30:09,832 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:30:09,832 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:30:10,921 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:30:10,921 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:30:10,933 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:30:10,933 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:30:13,909 [INFO] AP disabled
+2026-02-10 09:30:13,909 [INFO] AP disabled
+2026-02-10 09:30:20,068 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:30:20,068 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:48:52,549 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:48:52,549 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:48:52,560 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:48:52,560 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:49:06,373 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:49:06,373 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:49:07,526 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:49:07,526 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:49:07,529 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:49:07,529 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:50:31,646 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:50:31,646 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:50:32,657 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:50:32,657 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:50:32,689 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:50:32,689 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:50:35,160 [INFO] AP disabled
+2026-02-10 09:50:35,160 [INFO] AP disabled
+2026-02-10 09:50:41,321 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:50:41,321 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:53:11,515 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:53:11,515 [INFO] Starting RTKA Wi-Fi manager
+2026-02-10 09:53:11,522 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:53:11,522 [INFO] iface=wlan0 ap=EdupiRobo_AP ssid=EdupiRobo_AP portal=0.0.0.0:80
+2026-02-10 09:53:25,282 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:53:25,282 [INFO] Wi-Fi client disconnected on wlan0
+2026-02-10 09:53:26,435 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:53:26,435 [INFO] AP active: EdupiRobo_AP
+2026-02-10 09:53:26,437 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:53:26,437 [INFO] Portal listening on http://0.0.0.0:80
+2026-02-10 09:53:26,933 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:53:26,933 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:53:27,278 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:53:27,278 [INFO] HTTP 192.168.1.172 - "GET /favicon.ico HTTP/1.1" 302 -
+2026-02-10 09:53:27,313 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:53:27,313 [INFO] HTTP 192.168.1.172 - "GET / HTTP/1.1" 200 -
+2026-02-10 09:53:30,127 [INFO] AP disabled
+2026-02-10 09:53:30,127 [INFO] AP disabled
+2026-02-10 09:53:39,359 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
+2026-02-10 09:53:39,359 [INFO] HTTP 192.168.1.172 - "POST /connect-known HTTP/1.1" 200 -
