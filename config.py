@@ -28,7 +28,7 @@ PIN_RR_BWD = 9
 # --- EXTRAS (SERVO & BUZZER) ---
 PIN_SERVO_PAN = 12   # Servo Geleng (Kiri-Kanan)
 PIN_SERVO_TILT = 13  # Servo Angguk (Atas-Bawah)
-PIN_BUZZER = 16
+PIN_BUZZER = 5
 
 # --- ULTRASONIC (HC-SR04)---
 PIN_HCSR_TRIG = 26
