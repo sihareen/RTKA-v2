@@ -2,10 +2,37 @@
 
 Project absensi wajah berbasis OpenCV + LBPH.
 
+## Mode Baru: 1 Script Web (Recommended)
+
+Jalankan satu script ini:
+
+```bash
+python3 04_face_attendance_web.py --host 0.0.0.0 --port 5000
+```
+
+Lalu buka di browser:
+
+```text
+http://<IP_RASPBERRY_PI>:5000
+```
+
+Fitur pada halaman web:
+- Live camera stream
+- Start enroll (code, name, samples)
+- Start attendance mode
+- Stop mode
+- Export CSV per tanggal
+- Config jam kedatangan & kepulangan
+
+Catatan admin:
+- Aksi `Save Enroll` dan `Save Config` meminta PIN admin.
+- Default PIN awal: `123456`
+
 ## Dependencies
 
 ```bash
 pip3 install opencv-python opencv-contrib-python numpy
+pip3 install flask
 ```
 
 Opsional untuk Raspberry Pi Camera:

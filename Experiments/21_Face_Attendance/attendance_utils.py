@@ -121,8 +121,16 @@ def read_frame(camera, camera_type):
         frame = camera.capture_array()
         if frame is None:
             return False, None
-        if len(frame.shape) == 3 and frame.shape[2] == 4:
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif len(frame.shape) == 3 and frame.shape[2] == 4:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        elif len(frame.shape) == 3 and frame.shape[2] == 2:
+            # Some PiCamera2 pipelines return YUYV/UYVY frames.
+            try:
+                frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUY2)
+            except Exception:
+                frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_UYVY)
         return True, frame
 
     ret, frame = camera.read()
