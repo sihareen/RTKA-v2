@@ -59,6 +59,7 @@ Mode enroll terbaru:
 - 7 sudut wajib: Depan, Menoleh Kiri, Menoleh Kanan, Tengadah, Menunduk, Miring Kiri, Miring Kanan
 - Delay 3 detik saat mulai tiap sudut
 - Total 70 foto fixed (10 foto per sudut)
+- Deteksi enroll memakai bantuan rotasi frame (0, ±15, ±30 derajat) agar wajah miring tetap terbaca
 
 3. Jalankan absensi realtime:
 

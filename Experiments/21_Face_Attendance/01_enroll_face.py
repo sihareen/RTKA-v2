@@ -10,6 +10,7 @@ import os
 import time
 
 import cv2
+import numpy as np
 
 import attendance_utils as utils
 
@@ -24,6 +25,7 @@ ENROLL_ANGLES = [
     ("tilt_left", "Miring Kiri"),
     ("tilt_right", "Miring Kanan"),
 ]
+DETECT_ROTATION_ANGLES = [0, -15, 15, -30, 30]
 
 
 def parse_args():
@@ -49,6 +51,64 @@ def read_input(prompt):
 def normalize_target_samples(samples_target):
     _ = samples_target  # Kompatibilitas argumen lama.
     return DEFAULT_TOTAL_SAMPLES
+
+
+def _clip_box(x, y, w, h, width, height):
+    x = max(0, min(x, width - 1))
+    y = max(0, min(y, height - 1))
+    w = max(1, min(w, width - x))
+    h = max(1, min(h, height - y))
+    return x, y, w, h
+
+
+def _to_original_box(rot_box, inverse_matrix, width, height):
+    x, y, w, h = rot_box
+    points = np.array(
+        [
+            [[x, y]],
+            [[x + w, y]],
+            [[x + w, y + h]],
+            [[x, y + h]],
+        ],
+        dtype=np.float32,
+    )
+    points = cv2.transform(points, inverse_matrix)
+    x2, y2, w2, h2 = cv2.boundingRect(points)
+    return _clip_box(x2, y2, w2, h2, width, height)
+
+
+def detect_largest_face_with_rotation(detector, gray):
+    height, width = gray.shape[:2]
+    center = (width / 2.0, height / 2.0)
+
+    for angle in DETECT_ROTATION_ANGLES:
+        if angle == 0:
+            rotated = gray
+            inverse = None
+        else:
+            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            rotated = cv2.warpAffine(gray, matrix, (width, height))
+            inverse = cv2.invertAffineTransform(matrix)
+
+        faces = detector.detectMultiScale(
+            rotated,
+            scaleFactor=1.2,
+            minNeighbors=5,
+            minSize=(80, 80),
+        )
+        if len(faces) == 0:
+            continue
+
+        rx, ry, rw, rh = max(faces, key=lambda box: box[2] * box[3])
+        face_roi = rotated[ry : ry + rh, rx : rx + rw]
+
+        if angle == 0:
+            box = _clip_box(rx, ry, rw, rh, width, height)
+        else:
+            box = _to_original_box((rx, ry, rw, rh), inverse, width, height)
+        return box, face_roi
+
+    return None, None
 
 
 def main():
@@ -123,22 +183,15 @@ def main():
                 break
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = detector.detectMultiScale(
-                gray,
-                scaleFactor=1.2,
-                minNeighbors=5,
-                minSize=(80, 80),
-            )
+            face_box, face_roi = detect_largest_face_with_rotation(detector, gray)
 
             now = time.time()
             angle_label = ENROLL_ANGLES[current_angle_index][1]
             wait_remaining = max(0.0, ENROLL_ANGLE_DELAY_SEC - (now - angle_started_ts))
 
-            if len(faces) > 0:
-                # Ambil wajah terbesar agar data training lebih stabil.
-                x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
+            if face_box is not None and face_roi is not None:
+                x, y, w, h = face_box
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (20, 220, 20), 2)
-                face_roi = gray[y : y + h, x : x + w]
 
                 if wait_remaining <= 0 and now - last_capture_time >= min_capture_interval:
                     sample_index = existing_samples + captured + 1
