@@ -1,6 +1,6 @@
 # Bab 21 - Face Attendance
 
-Project absensi wajah berbasis OpenCV + YuNet + SFace embedding.
+Project absensi wajah berbasis OpenCV + `face_recognition` (dlib embedding).
 
 ## Mode Baru: 1 Script Web (Recommended)
 
@@ -31,7 +31,7 @@ Catatan admin:
 ## Dependencies
 
 ```bash
-pip3 install opencv-python opencv-contrib-python numpy flask
+pip3 install opencv-python opencv-contrib-python numpy flask face-recognition
 ```
 
 Opsional untuk Raspberry Pi Camera:
@@ -54,11 +54,11 @@ python3 00_test_camera.py
 python3 01_enroll_face.py --code EMP001 --name "Budi" --samples 70
 ```
 
-Mode enroll terbaru:
+Mode enroll terbaru (web):
 - 7 sudut wajib: Depan, Menoleh Kiri, Menoleh Kanan, Tengadah, Menunduk, Miring Kiri, Miring Kanan
 - Delay 3 detik saat mulai tiap sudut
 - Total 70 foto fixed (10 foto per sudut)
-- Deteksi wajah memakai YuNet, identifikasi memakai embedding SFace (cosine similarity)
+- Deteksi + embedding memakai `face_recognition` (distance matching, default threshold 0.50)
 
 3. Jalankan absensi realtime:
 
@@ -76,7 +76,5 @@ python3 03_export_report.py --date 2026-02-27
 
 - Database: `data/attendance.db`
 - Dataset wajah: `data/dataset/<person_code>/`
-- Model detector: `models/face_detection_yunet_2023mar.onnx`
-- Model recognizer: `models/face_recognition_sface_2021dec.onnx`
 - Embedding index: `models/face_embeddings.json`
 - Laporan CSV: `exports/`

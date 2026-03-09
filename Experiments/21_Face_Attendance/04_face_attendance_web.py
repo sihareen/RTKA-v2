@@ -24,7 +24,6 @@ import os
 import sqlite3
 import threading
 import time
-import urllib.request
 from datetime import datetime
 
 import cv2
@@ -32,6 +31,10 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
 import attendance_utils as common
+try:
+    import face_recognition
+except Exception:
+    face_recognition = None
 
 # ---------------------------------------------------------------------------
 # Paths and constants
@@ -44,16 +47,8 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 EXPORT_DIR = os.path.join(BASE_DIR, "exports")
 
 DB_PATH = os.path.join(DATA_DIR, "attendance.db")
-MODEL_PATH = os.path.join(MODELS_DIR, "lbph_trainer.yml")
-LABELS_PATH = os.path.join(MODELS_DIR, "labels.json")
-CASCADE_PATH = os.path.join(MODELS_DIR, "haarcascade_frontalface_default.xml")
 
-CASCADE_URL = (
-    "https://raw.githubusercontent.com/opencv/opencv/master/"
-    "data/haarcascades/haarcascade_frontalface_default.xml"
-)
-
-RECOGNITION_THRESHOLD = common.DEFAULT_FACE_MATCH_THRESHOLD
+RECOGNITION_THRESHOLD = 0.50
 ENROLL_INTERVAL_SEC = 0.15
 ENROLL_ANGLE_DELAY_SEC = 3.0
 DEFAULT_ENROLL_SAMPLES = 70
@@ -66,7 +61,6 @@ ENROLL_ANGLES = [
     ("tilt_left", "Miring Kiri"),
     ("tilt_right", "Miring Kanan"),
 ]
-DETECT_ROTATION_ANGLES = [0, -15, 15, -30, 30]
 DEFAULT_ADMIN_PIN = "123456"
 DEFAULT_ATTENDANCE_CONFIG = {
     "arrival_start": "06:00",
@@ -74,6 +68,7 @@ DEFAULT_ATTENDANCE_CONFIG = {
     "departure_start": "16:00",
     "departure_end": "21:00",
 }
+EMBEDDINGS_PATH = os.path.join(MODELS_DIR, "face_embeddings.json")
 
 
 # ---------------------------------------------------------------------------
@@ -85,61 +80,55 @@ def normalize_enroll_target(samples_target):
     return DEFAULT_ENROLL_SAMPLES
 
 
-def _clip_box(x, y, w, h, width, height):
-    x = max(0, min(x, width - 1))
-    y = max(0, min(y, height - 1))
-    w = max(1, min(w, width - x))
-    h = max(1, min(h, height - y))
-    return x, y, w, h
-
-
-def _to_original_box(rot_box, inverse_matrix, width, height):
-    x, y, w, h = rot_box
-    points = np.array(
-        [
-            [[x, y]],
-            [[x + w, y]],
-            [[x + w, y + h]],
-            [[x, y + h]],
-        ],
-        dtype=np.float32,
-    )
-    points = cv2.transform(points, inverse_matrix)
-    x2, y2, w2, h2 = cv2.boundingRect(points)
-    return _clip_box(x2, y2, w2, h2, width, height)
-
-
-def detect_largest_face_with_rotation(detector, gray):
-    height, width = gray.shape[:2]
-    center = (width / 2.0, height / 2.0)
-
-    for angle in DETECT_ROTATION_ANGLES:
-        if angle == 0:
-            rotated = gray
-            inverse = None
-        else:
-            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-            rotated = cv2.warpAffine(gray, matrix, (width, height))
-            inverse = cv2.invertAffineTransform(matrix)
-
-        faces = detector.detectMultiScale(
-            rotated,
-            scaleFactor=1.2,
-            minNeighbors=5,
-            minSize=(80, 80),
+def _require_face_recognition():
+    if face_recognition is None:
+        raise RuntimeError(
+            "face_recognition belum tersedia. Install di venv: pip install face-recognition"
         )
-        if len(faces) == 0:
-            continue
 
-        rx, ry, rw, rh = max(faces, key=lambda box: box[2] * box[3])
-        face_roi = rotated[ry : ry + rh, rx : rx + rw]
-        if angle == 0:
-            box = _clip_box(rx, ry, rw, rh, width, height)
-        else:
-            box = _to_original_box((rx, ry, rw, rh), inverse, width, height)
-        return box, face_roi
 
-    return None, None
+def _detect_face_locations(frame):
+    _require_face_recognition()
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    small = cv2.resize(rgb, (0, 0), fx=0.5, fy=0.5)
+    locations_small = face_recognition.face_locations(
+        small, number_of_times_to_upsample=0, model="hog"
+    )
+    locations = []
+    for top, right, bottom, left in locations_small:
+        locations.append((top * 2, right * 2, bottom * 2, left * 2))
+    return locations
+
+
+def _largest_location(locations):
+    if not locations:
+        return None
+    return max(locations, key=lambda loc: (loc[2] - loc[0]) * (loc[1] - loc[3]))
+
+
+def _encoding_for_locations(frame, locations):
+    _require_face_recognition()
+    if not locations:
+        return []
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return face_recognition.face_encodings(rgb, known_face_locations=locations, model="small")
+
+
+def _identify_face_encoding(face_encoding, embeddings_index, threshold):
+    best_person = None
+    best_distance = 999.0
+    for row in embeddings_index.values():
+        dist = float(np.linalg.norm(face_encoding - row["embedding"]))
+        if dist < best_distance:
+            best_distance = dist
+            best_person = row
+    if best_person is None or best_distance > threshold:
+        return None, best_distance
+    return {
+        "person_id": best_person["person_id"],
+        "person_code": best_person["person_code"],
+        "person_name": best_person["person_name"],
+    }, best_distance
 
 
 def ensure_directories():
@@ -331,21 +320,12 @@ def event_type_label(event_type):
     return "Di luar jadwal"
 
 
-def setup_face_cascade():
-    common.setup_face_models()
-
-
-def load_face_detector():
-    detector, _ = common.load_face_analyzers()
-    return detector
-
-
-def _require_opencv_contrib():
-    common._require_face_modules()
+def setup_face_backend():
+    _require_face_recognition()
 
 
 def load_face_analyzers():
-    return common.load_face_analyzers()
+    return None, None
 
 
 def add_or_update_person(person_code, person_name):
@@ -404,13 +384,99 @@ def save_face_sample(person_code, face_gray, sample_index):
     return filepath
 
 
-def train_lbph_model():
-    return common.train_face_embeddings_model(db_path=DB_PATH)
+def train_face_embeddings():
+    _require_face_recognition()
+    people_map = list_people_map()
+    person_codes = sorted(
+        [d for d in os.listdir(DATASET_DIR) if os.path.isdir(os.path.join(DATASET_DIR, d))]
+    )
+
+    records = []
+    total_images = 0
+    for person_code in person_codes:
+        person = people_map.get(person_code)
+        if person is None:
+            continue
+        person_dir = os.path.join(DATASET_DIR, person_code)
+        image_files = sorted(
+            [
+                f
+                for f in os.listdir(person_dir)
+                if f.lower().endswith((".png", ".jpg", ".jpeg"))
+            ]
+        )
+        if not image_files:
+            continue
+
+        encodings = []
+        for image_file in image_files:
+            image_path = os.path.join(person_dir, image_file)
+            frame = cv2.imread(image_path)
+            if frame is None:
+                continue
+            locations = _detect_face_locations(frame)
+            if not locations:
+                continue
+            largest = _largest_location(locations)
+            face_encodings = _encoding_for_locations(frame, [largest])
+            if not face_encodings:
+                continue
+            encodings.append(np.asarray(face_encodings[0], dtype=np.float32))
+            total_images += 1
+
+        if not encodings:
+            continue
+        mean_encoding = np.mean(np.vstack(encodings), axis=0)
+        records.append(
+            {
+                "person_id": person["person_id"],
+                "person_code": person["person_code"],
+                "person_name": person["person_name"],
+                "embedding": mean_encoding.tolist(),
+                "samples_used": len(encodings),
+            }
+        )
+
+    if not records:
+        raise RuntimeError("Tidak ada encoding valid. Cek kualitas dataset enroll.")
+
+    with open(EMBEDDINGS_PATH, "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "model": "face_recognition(dlib)",
+                "metric": "euclidean_distance",
+                "threshold": RECOGNITION_THRESHOLD,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "people": records,
+            },
+            file,
+            indent=2,
+        )
+    return len(records), total_images
 
 
-def load_recognizer():
-    embeddings, threshold = common.load_face_embeddings_index()
-    return embeddings, threshold
+def load_embeddings_index():
+    if not os.path.exists(EMBEDDINGS_PATH):
+        raise RuntimeError("Model embedding belum ada. Lakukan enroll dulu.")
+    with open(EMBEDDINGS_PATH, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    embeddings_index = {}
+    for row in data.get("people", []):
+        emb = np.asarray(row.get("embedding", []), dtype=np.float32).flatten()
+        if emb.size == 0:
+            continue
+        embeddings_index[row["person_code"]] = {
+            "person_id": row["person_id"],
+            "person_code": row["person_code"],
+            "person_name": row["person_name"],
+            "embedding": emb,
+            "samples_used": row.get("samples_used", 0),
+        }
+    if not embeddings_index:
+        raise RuntimeError("Index embedding kosong.")
+    threshold = float(data.get("threshold", RECOGNITION_THRESHOLD))
+    return embeddings_index, threshold
 
 
 def mark_attendance(person_data, confidence, event_type):
@@ -512,50 +578,15 @@ def export_attendance_csv(date_str):
 # ---------------------------------------------------------------------------
 
 def open_camera(width=640, height=480):
-    camera = cv2.VideoCapture(0)
-    if camera.isOpened():
-        camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        return camera, "USB Webcam"
-
-    try:
-        from picamera2 import Picamera2
-
-        camera = Picamera2()
-        config = camera.create_preview_configuration(main={"size": (width, height)})
-        camera.configure(config)
-        camera.start()
-        time.sleep(2)
-        return camera, "PiCamera2"
-    except Exception:
-        raise RuntimeError("No camera found")
+    return common.open_camera(width=width, height=height)
 
 
 def read_frame(camera, camera_type):
-    if camera_type == "PiCamera2":
-        frame = camera.capture_array()
-        if frame is None:
-            return False, None
-        if len(frame.shape) == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        elif len(frame.shape) == 3 and frame.shape[2] == 4:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-        elif len(frame.shape) == 3 and frame.shape[2] == 2:
-            try:
-                frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUY2)
-            except Exception:
-                frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_UYVY)
-        return True, frame
-
-    ret, frame = camera.read()
-    return ret, frame
+    return common.read_frame(camera, camera_type)
 
 
 def close_camera(camera, camera_type):
-    if camera_type == "PiCamera2":
-        camera.stop()
-    else:
-        camera.release()
+    common.close_camera(camera, camera_type)
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +597,7 @@ class FaceAttendanceEngine:
     def __init__(self):
         ensure_directories()
         init_database()
-        setup_face_cascade()
+        setup_face_backend()
 
         self.detector, self.feature_extractor = load_face_analyzers()
         self.camera, self.camera_type = open_camera()
@@ -581,6 +612,7 @@ class FaceAttendanceEngine:
         self.stop_event = threading.Event()
         self.thread = None
         self.training_thread = None
+        self.frame_seq = 0
 
         self.enroll_job = None
         self.embeddings_index = {}
@@ -592,7 +624,7 @@ class FaceAttendanceEngine:
 
     def _load_model_if_exists(self, initial=False):
         try:
-            self.embeddings_index, self.match_threshold = load_recognizer()
+            self.embeddings_index, self.match_threshold = load_embeddings_index()
             if initial:
                 self.message = "System ready (model loaded)"
             return True
@@ -747,6 +779,16 @@ class FaceAttendanceEngine:
             else:
                 self._draw_idle_overlay(frame)
 
+            self.frame_seq += 1
+            cv2.putText(
+                frame,
+                f"frame:{self.frame_seq} {datetime.now().strftime('%H:%M:%S')}",
+                (10, frame.shape[0] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (180, 220, 255),
+                1,
+            )
             self._update_jpeg(frame)
             time.sleep(0.01)
 
@@ -791,8 +833,8 @@ class FaceAttendanceEngine:
         )
 
     def _process_enroll(self, frame):
-        faces = common.detect_faces(self.detector, frame)
-        face_row = max(faces, key=lambda row: float(row[2] * row[3])) if faces else None
+        locations = _detect_face_locations(frame)
+        largest = _largest_location(locations)
 
         with self.mode_lock:
             job = self.enroll_job
@@ -805,12 +847,12 @@ class FaceAttendanceEngine:
         _, angle_label = ENROLL_ANGLES[job["angle_index"]]
         wait_remaining = max(0.0, ENROLL_ANGLE_DELAY_SEC - (now_ts - job["angle_started_ts"]))
 
-        if face_row is not None:
-            x, y, w, h = [int(v) for v in face_row[:4]]
-            x = max(0, x)
-            y = max(0, y)
-            w = max(1, min(w, frame.shape[1] - x))
-            h = max(1, min(h, frame.shape[0] - y))
+        if largest is not None:
+            top, right, bottom, left = largest
+            x = max(0, int(left))
+            y = max(0, int(top))
+            w = max(1, min(int(right - left), frame.shape[1] - x))
+            h = max(1, min(int(bottom - top), frame.shape[0] - y))
             cv2.rectangle(frame, (x, y), (x + w, y + h), (20, 220, 20), 2)
             face_roi = frame[y : y + h, x : x + w]
 
@@ -893,7 +935,7 @@ class FaceAttendanceEngine:
 
     def _rebuild_model_async(self):
         try:
-            total_people, total_images = train_lbph_model()
+            total_people, total_images = train_face_embeddings()
             self._load_model_if_exists()
             with self.mode_lock:
                 self.message = (
@@ -921,7 +963,8 @@ class FaceAttendanceEngine:
             )
             return
 
-        faces = common.detect_faces(self.detector, frame)
+        locations = _detect_face_locations(frame)
+        encodings = _encoding_for_locations(frame, locations)
 
         cv2.putText(
             frame,
@@ -958,15 +1001,13 @@ class FaceAttendanceEngine:
             1,
         )
 
-        for face_row in faces:
-            x, y, w, h = [int(v) for v in face_row[:4]]
-            x = max(0, x)
-            y = max(0, y)
-            w = max(1, min(w, frame.shape[1] - x))
-            h = max(1, min(h, frame.shape[0] - y))
-            feature = common.extract_face_feature(frame, face_row, self.feature_extractor)
-            label_data, similarity = common.identify_face(
-                feature,
+        for (top, right, bottom, left), face_encoding in zip(locations, encodings):
+            x = max(0, int(left))
+            y = max(0, int(top))
+            w = max(1, min(int(right - left), frame.shape[1] - x))
+            h = max(1, min(int(bottom - top), frame.shape[0] - y))
+            label_data, distance = _identify_face_encoding(
+                np.asarray(face_encoding, dtype=np.float32),
                 self.embeddings_index,
                 self.match_threshold,
             )
@@ -977,7 +1018,7 @@ class FaceAttendanceEngine:
                 person_name = label_data["person_name"]
                 person_code = label_data["person_code"]
                 color = (20, 220, 20)
-                text = f"{person_name} ({person_code}) sim:{similarity:.3f} [{event_label}]"
+                text = f"{person_name} ({person_code}) dist:{distance:.3f} [{event_label}]"
 
                 now_ts = time.time()
                 if event_type is None:
@@ -986,7 +1027,7 @@ class FaceAttendanceEngine:
                 else:
                     mark_key = f"{person_id}:{event_type}"
                     if now_ts - self.last_mark.get(mark_key, 0) > 3:
-                        saved = mark_attendance(label_data, similarity, event_type)
+                        saved = mark_attendance(label_data, distance, event_type)
                         with self.mode_lock:
                             if saved:
                                 self.message = (
@@ -1001,7 +1042,7 @@ class FaceAttendanceEngine:
                         self.last_mark[mark_key] = now_ts
             else:
                 color = (20, 20, 230)
-                text = f"Unknown sim:{similarity:.3f}"
+                text = f"Unknown dist:{distance:.3f}"
 
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             cv2.putText(
@@ -1626,7 +1667,11 @@ def make_app(engine):
                 )
                 time.sleep(0.03)
 
-        return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+        response = Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
     @app.route("/api/status")
     def api_status():

@@ -148,54 +148,42 @@ def load_face_analyzers(input_size=(640, 480)):
 
 
 def open_camera(width=640, height=480):
-    """Prefer USB webcam backend; fallback to PiCamera2."""
-    camera = cv2.VideoCapture(0)
-    if camera.isOpened():
+    """Open USB webcam via OpenCV/V4L2 only."""
+    backends = [cv2.CAP_V4L2, cv2.CAP_ANY]
+    for backend in backends:
+        camera = cv2.VideoCapture(0, backend)
+        if not camera.isOpened():
+            continue
+
         camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        return camera, "USB Webcam"
+        camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 
-    try:
-        from picamera2 import Picamera2
+        # Warm up webcam buffers; avoids stale first frame on some UVC devices.
+        ok = False
+        for _ in range(8):
+            ok, _ = camera.read()
+            if ok:
+                break
+            time.sleep(0.03)
+        if ok:
+            return camera, "USB Webcam"
+        camera.release()
 
-        camera = Picamera2()
-        config = camera.create_preview_configuration(main={"size": (width, height)})
-        camera.configure(config)
-        camera.start()
-        time.sleep(2)
-        return camera, "PiCamera2"
-    except Exception:
-        raise RuntimeError("No camera found")
+    raise RuntimeError("Webcam tidak tersedia di /dev/video0")
 
 
 def read_frame(camera, camera_type):
     """Read frame from selected camera backend."""
-    if camera_type == "PiCamera2":
-        frame = camera.capture_array()
-        if frame is None:
-            return False, None
-        if len(frame.shape) == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        elif len(frame.shape) == 3 and frame.shape[2] == 4:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-        elif len(frame.shape) == 3 and frame.shape[2] == 2:
-            # Some PiCamera2 pipelines return YUYV/UYVY frames.
-            try:
-                frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUY2)
-            except Exception:
-                frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_UYVY)
-        return True, frame
-
+    _ = camera_type
     ret, frame = camera.read()
     return ret, frame
 
 
 def close_camera(camera, camera_type):
     """Release camera resource."""
-    if camera_type == "PiCamera2":
-        camera.stop()
-    else:
-        camera.release()
+    _ = camera_type
+    camera.release()
 
 
 def add_or_update_person(person_code, person_name, db_path=DB_PATH):
