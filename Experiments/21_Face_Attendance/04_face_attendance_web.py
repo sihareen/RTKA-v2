@@ -31,6 +31,8 @@ import cv2
 import numpy as np
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
+import attendance_utils as common
+
 # ---------------------------------------------------------------------------
 # Paths and constants
 # ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ CASCADE_URL = (
     "data/haarcascades/haarcascade_frontalface_default.xml"
 )
 
-RECOGNITION_THRESHOLD = 60.0
+RECOGNITION_THRESHOLD = common.DEFAULT_FACE_MATCH_THRESHOLD
 ENROLL_INTERVAL_SEC = 0.15
 ENROLL_ANGLE_DELAY_SEC = 3.0
 DEFAULT_ENROLL_SAMPLES = 70
@@ -330,25 +332,20 @@ def event_type_label(event_type):
 
 
 def setup_face_cascade():
-    if os.path.exists(CASCADE_PATH):
-        return
-    print("Downloading Haar cascade model...")
-    urllib.request.urlretrieve(CASCADE_URL, CASCADE_PATH)
+    common.setup_face_models()
 
 
 def load_face_detector():
-    detector = cv2.CascadeClassifier(CASCADE_PATH)
-    if detector.empty():
-        raise RuntimeError("Failed to load haarcascade_frontalface_default.xml")
+    detector, _ = common.load_face_analyzers()
     return detector
 
 
 def _require_opencv_contrib():
-    if not hasattr(cv2, "face") or not hasattr(cv2.face, "LBPHFaceRecognizer_create"):
-        raise RuntimeError(
-            "cv2.face tidak tersedia. Install opencv-contrib-python: "
-            "pip3 install opencv-contrib-python"
-        )
+    common._require_face_modules()
+
+
+def load_face_analyzers():
+    return common.load_face_analyzers()
 
 
 def add_or_update_person(person_code, person_name):
@@ -408,73 +405,12 @@ def save_face_sample(person_code, face_gray, sample_index):
 
 
 def train_lbph_model():
-    _require_opencv_contrib()
-
-    faces = []
-    labels = []
-    labels_map = {}
-    label_index = 0
-
-    people_map = list_people_map()
-    person_codes = sorted(
-        [d for d in os.listdir(DATASET_DIR) if os.path.isdir(os.path.join(DATASET_DIR, d))]
-    )
-
-    for person_code in person_codes:
-        person = people_map.get(person_code)
-        if person is None:
-            continue
-
-        person_dir = os.path.join(DATASET_DIR, person_code)
-        image_files = sorted(
-            [
-                f
-                for f in os.listdir(person_dir)
-                if f.lower().endswith((".png", ".jpg", ".jpeg"))
-            ]
-        )
-        if not image_files:
-            continue
-
-        labels_map[str(label_index)] = person
-
-        for image_file in image_files:
-            image_path = os.path.join(person_dir, image_file)
-            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-            if image is None:
-                continue
-            image = cv2.resize(image, (200, 200))
-            faces.append(image)
-            labels.append(label_index)
-
-        label_index += 1
-
-    if len(faces) < 2:
-        raise RuntimeError("Data training kurang. Butuh minimal 2 sample wajah.")
-
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train(faces, np.array(labels))
-    recognizer.save(MODEL_PATH)
-
-    with open(LABELS_PATH, "w", encoding="utf-8") as file:
-        json.dump(labels_map, file, indent=2)
-
-    return len(labels_map), len(faces)
+    return common.train_face_embeddings_model(db_path=DB_PATH)
 
 
 def load_recognizer():
-    _require_opencv_contrib()
-
-    if not os.path.exists(MODEL_PATH) or not os.path.exists(LABELS_PATH):
-        raise RuntimeError("Model belum tersedia. Lakukan enroll dulu.")
-
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.read(MODEL_PATH)
-
-    with open(LABELS_PATH, "r", encoding="utf-8") as file:
-        labels_map = json.load(file)
-
-    return recognizer, labels_map
+    embeddings, threshold = common.load_face_embeddings_index()
+    return embeddings, threshold
 
 
 def mark_attendance(person_data, confidence, event_type):
@@ -634,7 +570,7 @@ class FaceAttendanceEngine:
         init_database()
         setup_face_cascade()
 
-        self.detector = load_face_detector()
+        self.detector, self.feature_extractor = load_face_analyzers()
         self.camera, self.camera_type = open_camera()
 
         self.mode = "idle"  # idle | enroll | attendance
@@ -648,8 +584,8 @@ class FaceAttendanceEngine:
         self.thread = None
 
         self.enroll_job = None
-        self.recognizer = None
-        self.labels_map = {}
+        self.embeddings_index = {}
+        self.match_threshold = RECOGNITION_THRESHOLD
         self.last_mark = {}
         self.attendance_config = get_attendance_config()
 
@@ -657,13 +593,13 @@ class FaceAttendanceEngine:
 
     def _load_model_if_exists(self, initial=False):
         try:
-            self.recognizer, self.labels_map = load_recognizer()
+            self.embeddings_index, self.match_threshold = load_recognizer()
             if initial:
                 self.message = "System ready (model loaded)"
             return True
         except Exception:
-            self.recognizer = None
-            self.labels_map = {}
+            self.embeddings_index = {}
+            self.match_threshold = RECOGNITION_THRESHOLD
             if initial:
                 self.message = "System ready (no model, please enroll first)"
             return False
@@ -739,7 +675,7 @@ class FaceAttendanceEngine:
 
     def start_attendance(self):
         with self.mode_lock:
-            if self.recognizer is None:
+            if not self.embeddings_index:
                 if not self._load_model_if_exists():
                     raise RuntimeError("Model belum tersedia. Lakukan enroll terlebih dulu.")
             self.mode = "attendance"
@@ -751,8 +687,8 @@ class FaceAttendanceEngine:
                 "mode": self.mode,
                 "message": self.message,
                 "camera_type": self.camera_type,
-                "model_ready": self.recognizer is not None,
-                "threshold": RECOGNITION_THRESHOLD,
+                "model_ready": bool(self.embeddings_index),
+                "threshold": self.match_threshold,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "attendance_config": dict(self.attendance_config),
                 "enroll": None,
@@ -794,15 +730,13 @@ class FaceAttendanceEngine:
                 time.sleep(0.05)
                 continue
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
             with self.mode_lock:
                 mode_now = self.mode
 
             if mode_now == "enroll":
-                self._process_enroll(frame, gray)
+                self._process_enroll(frame)
             elif mode_now == "attendance":
-                self._process_attendance(frame, gray)
+                self._process_attendance(frame)
             else:
                 self._draw_idle_overlay(frame)
 
@@ -829,8 +763,9 @@ class FaceAttendanceEngine:
             2,
         )
 
-    def _process_enroll(self, frame, gray):
-        face_box, face_roi = detect_largest_face_with_rotation(self.detector, gray)
+    def _process_enroll(self, frame):
+        faces = common.detect_faces(self.detector, frame)
+        face_row = max(faces, key=lambda row: float(row[2] * row[3])) if faces else None
 
         with self.mode_lock:
             job = self.enroll_job
@@ -843,13 +778,23 @@ class FaceAttendanceEngine:
         _, angle_label = ENROLL_ANGLES[job["angle_index"]]
         wait_remaining = max(0.0, ENROLL_ANGLE_DELAY_SEC - (now_ts - job["angle_started_ts"]))
 
-        if face_box is not None and face_roi is not None:
-            x, y, w, h = face_box
+        if face_row is not None:
+            x, y, w, h = [int(v) for v in face_row[:4]]
+            x = max(0, x)
+            y = max(0, y)
+            w = max(1, min(w, frame.shape[1] - x))
+            h = max(1, min(h, frame.shape[0] - y))
             cv2.rectangle(frame, (x, y), (x + w, y + h), (20, 220, 20), 2)
+            face_roi = frame[y : y + h, x : x + w]
 
-            if wait_remaining <= 0 and now_ts - job["last_capture_ts"] >= ENROLL_INTERVAL_SEC:
+            if (
+                face_roi.size > 0
+                and wait_remaining <= 0
+                and now_ts - job["last_capture_ts"] >= ENROLL_INTERVAL_SEC
+            ):
                 sample_index = job["existing"] + job["captured"] + 1
-                save_face_sample(job["person"]["person_code"], face_roi, sample_index)
+                face_gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+                save_face_sample(job["person"]["person_code"], face_gray, sample_index)
 
                 with self.mode_lock:
                     if self.enroll_job is not None:
@@ -925,8 +870,8 @@ class FaceAttendanceEngine:
                 self.mode = "idle"
                 self.enroll_job = None
 
-    def _process_attendance(self, frame, gray):
-        if self.recognizer is None:
+    def _process_attendance(self, frame):
+        if not self.embeddings_index:
             cv2.putText(
                 frame,
                 "No model. Please enroll first.",
@@ -938,12 +883,7 @@ class FaceAttendanceEngine:
             )
             return
 
-        faces = self.detector.detectMultiScale(
-            gray,
-            scaleFactor=1.2,
-            minNeighbors=5,
-            minSize=(80, 80),
-        )
+        faces = common.detect_faces(self.detector, frame)
 
         cv2.putText(
             frame,
@@ -980,20 +920,26 @@ class FaceAttendanceEngine:
             1,
         )
 
-        for (x, y, w, h) in faces:
-            roi = gray[y : y + h, x : x + w]
-            roi = cv2.resize(roi, (200, 200))
-
-            pred_label, confidence = self.recognizer.predict(roi)
-            label_data = self.labels_map.get(str(pred_label))
-            known = label_data is not None and confidence <= RECOGNITION_THRESHOLD
+        for face_row in faces:
+            x, y, w, h = [int(v) for v in face_row[:4]]
+            x = max(0, x)
+            y = max(0, y)
+            w = max(1, min(w, frame.shape[1] - x))
+            h = max(1, min(h, frame.shape[0] - y))
+            feature = common.extract_face_feature(frame, face_row, self.feature_extractor)
+            label_data, similarity = common.identify_face(
+                feature,
+                self.embeddings_index,
+                self.match_threshold,
+            )
+            known = label_data is not None
 
             if known:
                 person_id = label_data["person_id"]
                 person_name = label_data["person_name"]
                 person_code = label_data["person_code"]
                 color = (20, 220, 20)
-                text = f"{person_name} ({person_code}) {confidence:.1f} [{event_label}]"
+                text = f"{person_name} ({person_code}) sim:{similarity:.3f} [{event_label}]"
 
                 now_ts = time.time()
                 if event_type is None:
@@ -1002,7 +948,7 @@ class FaceAttendanceEngine:
                 else:
                     mark_key = f"{person_id}:{event_type}"
                     if now_ts - self.last_mark.get(mark_key, 0) > 3:
-                        saved = mark_attendance(label_data, confidence, event_type)
+                        saved = mark_attendance(label_data, similarity, event_type)
                         with self.mode_lock:
                             if saved:
                                 self.message = (
@@ -1017,7 +963,7 @@ class FaceAttendanceEngine:
                         self.last_mark[mark_key] = now_ts
             else:
                 color = (20, 20, 230)
-                text = f"Unknown {confidence:.1f}"
+                text = f"Unknown sim:{similarity:.3f}"
 
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             cv2.putText(

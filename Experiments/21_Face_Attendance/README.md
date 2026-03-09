@@ -1,6 +1,6 @@
 # Bab 21 - Face Attendance
 
-Project absensi wajah berbasis OpenCV + LBPH.
+Project absensi wajah berbasis OpenCV + YuNet + SFace embedding.
 
 ## Mode Baru: 1 Script Web (Recommended)
 
@@ -31,8 +31,7 @@ Catatan admin:
 ## Dependencies
 
 ```bash
-pip3 install opencv-python opencv-contrib-python numpy
-pip3 install flask
+pip3 install opencv-python opencv-contrib-python numpy flask
 ```
 
 Opsional untuk Raspberry Pi Camera:
@@ -59,12 +58,12 @@ Mode enroll terbaru:
 - 7 sudut wajib: Depan, Menoleh Kiri, Menoleh Kanan, Tengadah, Menunduk, Miring Kiri, Miring Kanan
 - Delay 3 detik saat mulai tiap sudut
 - Total 70 foto fixed (10 foto per sudut)
-- Deteksi enroll memakai bantuan rotasi frame (0, ±15, ±30 derajat) agar wajah miring tetap terbaca
+- Deteksi wajah memakai YuNet, identifikasi memakai embedding SFace (cosine similarity)
 
 3. Jalankan absensi realtime:
 
 ```bash
-python3 02_attendance_realtime.py --threshold 60
+python3 02_attendance_realtime.py --threshold 0.36
 ```
 
 4. Export laporan:
@@ -77,6 +76,7 @@ python3 03_export_report.py --date 2026-02-27
 
 - Database: `data/attendance.db`
 - Dataset wajah: `data/dataset/<person_code>/`
-- Model recognition: `models/lbph_trainer.yml`
-- Mapping labels: `models/labels.json`
+- Model detector: `models/face_detection_yunet_2023mar.onnx`
+- Model recognizer: `models/face_recognition_sface_2021dec.onnx`
+- Embedding index: `models/face_embeddings.json`
 - Laporan CSV: `exports/`

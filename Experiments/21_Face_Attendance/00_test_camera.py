@@ -2,7 +2,7 @@
 """
 Bab 21.0: Test Camera + Face Detection
 ======================================
-Verifikasi kamera dan deteksi wajah sebelum enroll/absensi.
+Verifikasi kamera dan deteksi wajah (YuNet) sebelum enroll/absensi.
 """
 
 import time
@@ -17,8 +17,7 @@ print("=" * 60)
 
 utils.ensure_directories()
 utils.init_database()
-utils.setup_face_cascade()
-detector = utils.load_face_detector()
+detector, _ = utils.load_face_analyzers()
 
 camera = None
 camera_type = None
@@ -38,15 +37,13 @@ try:
             break
 
         frame_count += 1
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = detector.detectMultiScale(
-            gray,
-            scaleFactor=1.2,
-            minNeighbors=5,
-            minSize=(60, 60),
-        )
-
-        for (x, y, w, h) in faces:
+        faces = utils.detect_faces(detector, frame)
+        for face_row in faces:
+            x, y, w, h = [int(v) for v in face_row[:4]]
+            x = max(0, x)
+            y = max(0, y)
+            w = max(1, min(w, frame.shape[1] - x))
+            h = max(1, min(h, frame.shape[0] - y))
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
 
         elapsed = time.time() - start_time

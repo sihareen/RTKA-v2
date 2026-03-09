@@ -2,7 +2,7 @@
 """
 Bab 21.1: Enroll Wajah untuk Absensi
 ====================================
-Mendaftarkan wajah user dan melatih model LBPH.
+Mendaftarkan wajah user dan membangun index embedding SFace.
 """
 
 import argparse
@@ -10,7 +10,6 @@ import os
 import time
 
 import cv2
-import numpy as np
 
 import attendance_utils as utils
 
@@ -25,9 +24,6 @@ ENROLL_ANGLES = [
     ("tilt_left", "Miring Kiri"),
     ("tilt_right", "Miring Kanan"),
 ]
-DETECT_ROTATION_ANGLES = [0, -15, 15, -30, 30]
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Enroll wajah untuk attendance")
     parser.add_argument("--code", type=str, help="Kode user, contoh: EMP001")
@@ -51,64 +47,6 @@ def read_input(prompt):
 def normalize_target_samples(samples_target):
     _ = samples_target  # Kompatibilitas argumen lama.
     return DEFAULT_TOTAL_SAMPLES
-
-
-def _clip_box(x, y, w, h, width, height):
-    x = max(0, min(x, width - 1))
-    y = max(0, min(y, height - 1))
-    w = max(1, min(w, width - x))
-    h = max(1, min(h, height - y))
-    return x, y, w, h
-
-
-def _to_original_box(rot_box, inverse_matrix, width, height):
-    x, y, w, h = rot_box
-    points = np.array(
-        [
-            [[x, y]],
-            [[x + w, y]],
-            [[x + w, y + h]],
-            [[x, y + h]],
-        ],
-        dtype=np.float32,
-    )
-    points = cv2.transform(points, inverse_matrix)
-    x2, y2, w2, h2 = cv2.boundingRect(points)
-    return _clip_box(x2, y2, w2, h2, width, height)
-
-
-def detect_largest_face_with_rotation(detector, gray):
-    height, width = gray.shape[:2]
-    center = (width / 2.0, height / 2.0)
-
-    for angle in DETECT_ROTATION_ANGLES:
-        if angle == 0:
-            rotated = gray
-            inverse = None
-        else:
-            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-            rotated = cv2.warpAffine(gray, matrix, (width, height))
-            inverse = cv2.invertAffineTransform(matrix)
-
-        faces = detector.detectMultiScale(
-            rotated,
-            scaleFactor=1.2,
-            minNeighbors=5,
-            minSize=(80, 80),
-        )
-        if len(faces) == 0:
-            continue
-
-        rx, ry, rw, rh = max(faces, key=lambda box: box[2] * box[3])
-        face_roi = rotated[ry : ry + rh, rx : rx + rw]
-
-        if angle == 0:
-            box = _clip_box(rx, ry, rw, rh, width, height)
-        else:
-            box = _to_original_box((rx, ry, rw, rh), inverse, width, height)
-        return box, face_roi
-
-    return None, None
 
 
 def main():
@@ -138,8 +76,7 @@ def main():
 
     utils.ensure_directories()
     utils.init_database()
-    utils.setup_face_cascade()
-    detector = utils.load_face_detector()
+    detector, _ = utils.load_face_analyzers()
 
     person_data = utils.add_or_update_person(person_code, person_name)
     print(
@@ -182,20 +119,32 @@ def main():
                 print("Failed to read frame.")
                 break
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            face_box, face_roi = detect_largest_face_with_rotation(detector, gray)
+            faces = utils.detect_faces(detector, frame)
+            face_row = max(faces, key=lambda row: float(row[2] * row[3])) if faces else None
 
             now = time.time()
             angle_label = ENROLL_ANGLES[current_angle_index][1]
             wait_remaining = max(0.0, ENROLL_ANGLE_DELAY_SEC - (now - angle_started_ts))
 
-            if face_box is not None and face_roi is not None:
-                x, y, w, h = face_box
+            if face_row is not None:
+                x, y, w, h = [int(v) for v in face_row[:4]]
+                x = max(0, x)
+                y = max(0, y)
+                w = max(1, min(w, frame.shape[1] - x))
+                h = max(1, min(h, frame.shape[0] - y))
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (20, 220, 20), 2)
+                face_roi = frame[y : y + h, x : x + w]
+                if face_roi.size == 0:
+                    face_roi = None
 
-                if wait_remaining <= 0 and now - last_capture_time >= min_capture_interval:
+                if (
+                    face_roi is not None
+                    and wait_remaining <= 0
+                    and now - last_capture_time >= min_capture_interval
+                ):
                     sample_index = existing_samples + captured + 1
-                    utils.save_face_sample(person_code, face_roi, sample_index)
+                    face_gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+                    utils.save_face_sample(person_code, face_gray, sample_index)
                     captured += 1
                     captured_in_angle += 1
                     last_capture_time = now
@@ -269,11 +218,11 @@ def main():
         return
 
     try:
-        total_people, total_images = utils.train_lbph_model()
-        print("Training selesai.")
+        total_people, total_images = utils.train_face_embeddings_model()
+        print("Build embedding model selesai.")
         print(f"Total people in model : {total_people}")
         print(f"Total face samples    : {total_images}")
-        print(f"Model path            : {utils.MODEL_PATH}")
+        print(f"Model path            : {utils.EMBEDDINGS_PATH}")
     except Exception as exc:
         print(f"Training failed: {exc}")
 

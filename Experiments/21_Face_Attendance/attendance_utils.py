@@ -23,11 +23,23 @@ DB_PATH = os.path.join(DATA_DIR, "attendance.db")
 MODEL_PATH = os.path.join(MODELS_DIR, "lbph_trainer.yml")
 LABELS_PATH = os.path.join(MODELS_DIR, "labels.json")
 CASCADE_PATH = os.path.join(MODELS_DIR, "haarcascade_frontalface_default.xml")
+EMBEDDINGS_PATH = os.path.join(MODELS_DIR, "face_embeddings.json")
+YUNET_MODEL_PATH = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
+SFACE_MODEL_PATH = os.path.join(MODELS_DIR, "face_recognition_sface_2021dec.onnx")
 
 CASCADE_URL = (
     "https://raw.githubusercontent.com/opencv/opencv/master/"
     "data/haarcascades/haarcascade_frontalface_default.xml"
 )
+YUNET_MODEL_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
+    "face_detection_yunet_2023mar.onnx"
+)
+SFACE_MODEL_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/"
+    "face_recognition_sface_2021dec.onnx"
+)
+DEFAULT_FACE_MATCH_THRESHOLD = 0.363
 
 
 def ensure_directories():
@@ -84,12 +96,55 @@ def setup_face_cascade(cascade_path=CASCADE_PATH):
     return cascade_path
 
 
+def _download_if_missing(path, url, label):
+    if os.path.exists(path):
+        return path
+    print(f"Downloading {label}...")
+    urllib.request.urlretrieve(url, path)
+    return path
+
+
+def setup_face_models():
+    """Ensure YuNet and SFace ONNX files exist."""
+    _download_if_missing(YUNET_MODEL_PATH, YUNET_MODEL_URL, "YuNet model")
+    _download_if_missing(SFACE_MODEL_PATH, SFACE_MODEL_URL, "SFace model")
+
+
 def load_face_detector(cascade_path=CASCADE_PATH):
     """Load OpenCV Haar cascade detector."""
     detector = cv2.CascadeClassifier(cascade_path)
     if detector.empty():
         raise RuntimeError("Failed to load haarcascade model")
     return detector
+
+
+def _require_face_modules():
+    if not hasattr(cv2, "FaceDetectorYN_create"):
+        raise RuntimeError(
+            "FaceDetectorYN tidak tersedia. Gunakan OpenCV terbaru "
+            "(disarankan opencv-contrib-python)."
+        )
+    if not hasattr(cv2, "FaceRecognizerSF_create"):
+        raise RuntimeError(
+            "FaceRecognizerSF tidak tersedia. Gunakan OpenCV terbaru "
+            "(disarankan opencv-contrib-python)."
+        )
+
+
+def load_face_analyzers(input_size=(640, 480)):
+    """Load YuNet detector and SFace recognizer."""
+    _require_face_modules()
+    setup_face_models()
+    detector = cv2.FaceDetectorYN_create(
+        YUNET_MODEL_PATH,
+        "",
+        input_size,
+        score_threshold=0.9,
+        nms_threshold=0.3,
+        top_k=5000,
+    )
+    recognizer = cv2.FaceRecognizerSF_create(SFACE_MODEL_PATH, "")
+    return detector, recognizer
 
 
 def open_camera(width=640, height=480):
@@ -207,24 +262,44 @@ def save_face_sample(person_code, face_gray, sample_index):
     return filepath
 
 
-def _require_opencv_contrib():
-    if not hasattr(cv2, "face") or not hasattr(cv2.face, "LBPHFaceRecognizer_create"):
-        raise RuntimeError(
-            "cv2.face (opencv-contrib-python) tidak tersedia. "
-            "Install: pip3 install opencv-contrib-python"
-        )
+def _normalize_feature(feature):
+    vec = np.asarray(feature, dtype=np.float32).flatten()
+    norm = np.linalg.norm(vec)
+    if norm <= 1e-10:
+        return None
+    return vec / norm
 
 
-def train_lbph_model(db_path=DB_PATH):
-    """Train LBPH model using all dataset images."""
-    _require_opencv_contrib()
+def detect_faces(detector, frame):
+    """Detect faces using YuNet."""
+    height, width = frame.shape[:2]
+    detector.setInputSize((width, height))
+    _, faces = detector.detect(frame)
+    if faces is None:
+        return []
+    return faces
 
-    faces = []
-    labels = []
-    labels_map = {}
-    label_index = 0
 
-    persons = {p["person_code"]: p for p in list_people(db_path=db_path)}
+def extract_face_feature(frame, face_row, recognizer):
+    """Extract normalized SFace embedding from one detected face row."""
+    aligned = recognizer.alignCrop(frame, face_row)
+    feature = recognizer.feature(aligned)
+    return _normalize_feature(feature)
+
+
+def _largest_face(faces):
+    if not faces:
+        return None
+    return max(faces, key=lambda row: float(row[2] * row[3]))
+
+
+def train_face_embeddings_model(db_path=DB_PATH):
+    """
+    Build face embedding index from dataset images.
+    Returns (total_people, total_images_used).
+    """
+    detector, recognizer = load_face_analyzers()
+    people = {p["person_code"]: p for p in list_people(db_path=db_path)}
     person_codes = sorted(
         [
             d
@@ -233,8 +308,10 @@ def train_lbph_model(db_path=DB_PATH):
         ]
     )
 
+    records = []
+    total_images_used = 0
     for person_code in person_codes:
-        person = persons.get(person_code)
+        person = people.get(person_code)
         if person is None:
             continue
 
@@ -249,47 +326,103 @@ def train_lbph_model(db_path=DB_PATH):
         if not image_files:
             continue
 
-        labels_map[str(label_index)] = person
+        features = []
         for image_file in image_files:
             image_path = os.path.join(person_dir, image_file)
-            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-            if image is None:
+            frame = cv2.imread(image_path)
+            if frame is None:
                 continue
-            image = cv2.resize(image, (200, 200))
-            faces.append(image)
-            labels.append(label_index)
+            faces = detect_faces(detector, frame)
+            face_row = _largest_face(faces)
+            if face_row is None:
+                continue
+            feature = extract_face_feature(frame, face_row, recognizer)
+            if feature is None:
+                continue
+            features.append(feature)
+            total_images_used += 1
 
-        label_index += 1
+        if not features:
+            continue
 
-    if len(faces) < 2:
-        raise RuntimeError("Data training kurang. Minimal 2 sample wajah.")
+        mean_feature = _normalize_feature(np.mean(np.vstack(features), axis=0))
+        if mean_feature is None:
+            continue
+        records.append(
+            {
+                "person_id": person["person_id"],
+                "person_code": person["person_code"],
+                "person_name": person["person_name"],
+                "embedding": mean_feature.tolist(),
+                "samples_used": len(features),
+            }
+        )
 
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train(faces, np.array(labels))
-    recognizer.save(MODEL_PATH)
+    if not records:
+        raise RuntimeError("Gagal membuat embedding. Pastikan dataset wajah valid.")
 
-    with open(LABELS_PATH, "w", encoding="utf-8") as file:
-        json.dump(labels_map, file, indent=2)
+    with open(EMBEDDINGS_PATH, "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "model": "SFace",
+                "metric": "cosine_similarity",
+                "threshold": DEFAULT_FACE_MATCH_THRESHOLD,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "people": records,
+            },
+            file,
+            indent=2,
+        )
+    return len(records), total_images_used
 
-    return len(labels_map), len(faces)
+
+def load_face_embeddings_index():
+    """Load embedding index and return dict keyed by person_code."""
+    if not os.path.exists(EMBEDDINGS_PATH):
+        raise RuntimeError("Model embedding belum ada. Jalankan 01_enroll_face.py dulu.")
+    with open(EMBEDDINGS_PATH, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    people = {}
+    for row in data.get("people", []):
+        embedding = _normalize_feature(row.get("embedding"))
+        if embedding is None:
+            continue
+        people[row["person_code"]] = {
+            "person_id": row["person_id"],
+            "person_code": row["person_code"],
+            "person_name": row["person_name"],
+            "embedding": embedding,
+            "samples_used": row.get("samples_used", 0),
+        }
+
+    if not people:
+        raise RuntimeError("Embedding index kosong/tidak valid.")
+    threshold = float(data.get("threshold", DEFAULT_FACE_MATCH_THRESHOLD))
+    return people, threshold
 
 
-def load_recognizer():
-    """Load trained LBPH model and labels mapping."""
-    _require_opencv_contrib()
+def identify_face(feature, embeddings_index, threshold):
+    """Return (person_data_or_none, similarity)."""
+    query = _normalize_feature(feature)
+    if query is None:
+        return None, -1.0
 
-    if not os.path.exists(MODEL_PATH):
-        raise RuntimeError("Model belum ada. Jalankan 01_enroll_face.py terlebih dulu.")
-    if not os.path.exists(LABELS_PATH):
-        raise RuntimeError("labels.json belum ada. Jalankan 01_enroll_face.py terlebih dulu.")
+    best_person = None
+    best_score = -1.0
+    for row in embeddings_index.values():
+        score = float(np.dot(query, row["embedding"]))
+        if score > best_score:
+            best_score = score
+            best_person = row
 
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.read(MODEL_PATH)
-
-    with open(LABELS_PATH, "r", encoding="utf-8") as file:
-        labels_map = json.load(file)
-
-    return recognizer, labels_map
+    if best_person is None or best_score < threshold:
+        return None, best_score
+    return {
+        "person_id": best_person["person_id"],
+        "person_code": best_person["person_code"],
+        "person_name": best_person["person_name"],
+    }, best_score
 
 
 def mark_attendance(person_data, confidence, db_path=DB_PATH):
