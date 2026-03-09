@@ -14,13 +14,15 @@ import cv2
 import attendance_utils as utils
 
 ENROLL_ANGLE_DELAY_SEC = 3.0
-DEFAULT_TOTAL_SAMPLES = 50
+DEFAULT_TOTAL_SAMPLES = 70
 ENROLL_ANGLES = [
     ("front", "Depan"),
-    ("left", "Miring Kiri"),
-    ("right", "Miring Kanan"),
+    ("left", "Menoleh Kiri"),
+    ("right", "Menoleh Kanan"),
     ("up", "Tengadah"),
     ("down", "Menunduk"),
+    ("tilt_left", "Miring Kiri"),
+    ("tilt_right", "Miring Kanan"),
 ]
 
 
@@ -31,8 +33,8 @@ def parse_args():
     parser.add_argument(
         "--samples",
         type=int,
-        default=50,
-        help="Kompatibilitas lama (diabaikan, enroll selalu 50 foto)",
+        default=70,
+        help="Kompatibilitas lama (diabaikan, enroll selalu 70 foto)",
     )
     return parser.parse_args()
 
@@ -65,10 +67,13 @@ def main():
 
     print(f"\nTarget samples: {samples_target}")
     print(
-        f"Mode 5 sudut aktif: {samples_per_angle} foto per sudut, "
+        f"Mode {len(ENROLL_ANGLES)} sudut aktif: {samples_per_angle} foto per sudut, "
         f"delay {ENROLL_ANGLE_DELAY_SEC:.0f} detik tiap sudut."
     )
-    print("Urutan sudut: Depan -> Miring Kiri -> Miring Kanan -> Tengadah -> Menunduk")
+    print(
+        "Urutan sudut: Depan -> Menoleh Kiri -> Menoleh Kanan -> "
+        "Tengadah -> Menunduk -> Miring Kiri -> Miring Kanan"
+    )
     print("Tekan 'q' untuk batal.\n")
 
     utils.ensure_directories()
@@ -107,7 +112,7 @@ def main():
         print(f"Camera ready: {camera_type}")
         angle_started_ts = time.time()
         print(
-            "Sudut 1/5: Depan. "
+            f"Sudut 1/{len(ENROLL_ANGLES)}: Depan. "
             f"Tahan posisi, capture dimulai dalam {ENROLL_ANGLE_DELAY_SEC:.0f} detik."
         )
 
@@ -149,7 +154,8 @@ def main():
                         last_capture_time = 0.0
                         _, next_label = ENROLL_ANGLES[current_angle_index]
                         print(
-                            f"Sudut {current_angle_index + 1}/5: {next_label}. "
+                            f"Sudut {current_angle_index + 1}/{len(ENROLL_ANGLES)}: "
+                            f"{next_label}. "
                             f"Tunggu {ENROLL_ANGLE_DELAY_SEC:.0f} detik."
                         )
 
@@ -164,7 +170,7 @@ def main():
             )
             cv2.putText(
                 frame,
-                f"Angle: {current_angle_index + 1}/5 - {angle_label}",
+                f"Angle: {current_angle_index + 1}/{len(ENROLL_ANGLES)} - {angle_label}",
                 (10, 55),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,

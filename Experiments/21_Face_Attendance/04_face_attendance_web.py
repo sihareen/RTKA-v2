@@ -54,13 +54,15 @@ CASCADE_URL = (
 RECOGNITION_THRESHOLD = 60.0
 ENROLL_INTERVAL_SEC = 0.15
 ENROLL_ANGLE_DELAY_SEC = 3.0
-DEFAULT_ENROLL_SAMPLES = 50
+DEFAULT_ENROLL_SAMPLES = 70
 ENROLL_ANGLES = [
     ("front", "Depan"),
-    ("left", "Miring Kiri"),
-    ("right", "Miring Kanan"),
+    ("left", "Menoleh Kiri"),
+    ("right", "Menoleh Kanan"),
     ("up", "Tengadah"),
     ("down", "Menunduk"),
+    ("tilt_left", "Miring Kiri"),
+    ("tilt_right", "Miring Kanan"),
 ]
 DEFAULT_ADMIN_PIN = "123456"
 DEFAULT_ATTENDANCE_CONFIG = {
@@ -1373,7 +1375,7 @@ HTML_TEMPLATE = """
         <div class="block">
           <h3 class="section-title">Enroll (Admin)</h3>
           <div class="pin-note">Save Enroll akan meminta PIN admin.</div>
-          <div class="muted">Fixed 50 foto: 5 sudut (Depan, Kiri, Kanan, Tengadah, Menunduk), delay 3 detik per sudut.</div>
+          <div class="muted">Fixed 70 foto: 7 sudut (Depan, Menoleh Kiri, Menoleh Kanan, Tengadah, Menunduk, Miring Kiri, Miring Kanan), delay 3 detik per sudut.</div>
           <input id="code" placeholder="Person Code (EMP001)">
           <input id="name" placeholder="Person Name">
           <button class="btn-accent" onclick="startEnroll()">Save Enroll</button>
@@ -1450,7 +1452,7 @@ HTML_TEMPLATE = """
       const payload = {
         person_code: document.getElementById('code').value,
         person_name: document.getElementById('name').value,
-        samples: 50,
+        samples: 70,
         admin_pin: pin
       };
       const res = await apiPost('/api/start_enroll', payload);

@@ -52,13 +52,13 @@ python3 00_test_camera.py
 2. Enroll user:
 
 ```bash
-python3 01_enroll_face.py --code EMP001 --name "Budi" --samples 50
+python3 01_enroll_face.py --code EMP001 --name "Budi" --samples 70
 ```
 
 Mode enroll terbaru:
-- 5 sudut wajib: Depan, Miring Kiri, Miring Kanan, Tengadah, Menunduk
+- 7 sudut wajib: Depan, Menoleh Kiri, Menoleh Kanan, Tengadah, Menunduk, Miring Kiri, Miring Kanan
 - Delay 3 detik saat mulai tiap sudut
-- Total 50 foto fixed (10 foto per sudut)
+- Total 70 foto fixed (10 foto per sudut)
 
 3. Jalankan absensi realtime:
 
