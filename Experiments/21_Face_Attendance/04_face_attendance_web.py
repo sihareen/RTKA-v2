@@ -512,6 +512,12 @@ def export_attendance_csv(date_str):
 # ---------------------------------------------------------------------------
 
 def open_camera(width=640, height=480):
+    camera = cv2.VideoCapture(0)
+    if camera.isOpened():
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        return camera, "USB Webcam"
+
     try:
         from picamera2 import Picamera2
 
@@ -522,15 +528,7 @@ def open_camera(width=640, height=480):
         time.sleep(2)
         return camera, "PiCamera2"
     except Exception:
-        pass
-
-    camera = cv2.VideoCapture(0)
-    if not camera.isOpened():
         raise RuntimeError("No camera found")
-
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    return camera, "USB Webcam"
 
 
 def read_frame(camera, camera_type):
