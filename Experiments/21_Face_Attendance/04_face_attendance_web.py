@@ -573,7 +573,7 @@ class FaceAttendanceEngine:
         self.detector, self.feature_extractor = load_face_analyzers()
         self.camera, self.camera_type = open_camera()
 
-        self.mode = "idle"  # idle | enroll | attendance
+        self.mode = "idle"  # idle | enroll | attendance | training
         self.message = "System ready"
         self.mode_lock = threading.Lock()
 
@@ -582,6 +582,7 @@ class FaceAttendanceEngine:
 
         self.stop_event = threading.Event()
         self.thread = None
+        self.training_thread = None
 
         self.enroll_job = None
         self.embeddings_index = {}
@@ -612,6 +613,8 @@ class FaceAttendanceEngine:
         self.stop_event.set()
         if self.thread is not None:
             self.thread.join(timeout=3)
+        if self.training_thread is not None and self.training_thread.is_alive():
+            self.training_thread.join(timeout=3)
         close_camera(self.camera, self.camera_type)
 
     def set_idle(self):
@@ -628,6 +631,8 @@ class FaceAttendanceEngine:
             raise ValueError("person_code dan person_name wajib diisi")
         if not verify_admin_pin(admin_pin):
             raise ValueError("PIN admin salah")
+        if self.mode == "training":
+            raise ValueError("Model sedang diproses, tunggu hingga selesai")
 
         total_target = normalize_enroll_target(samples_target)
         samples_per_angle = total_target // len(ENROLL_ANGLES)
@@ -675,6 +680,8 @@ class FaceAttendanceEngine:
 
     def start_attendance(self):
         with self.mode_lock:
+            if self.mode == "training":
+                raise RuntimeError("Model sedang diproses, tunggu hingga selesai.")
             if not self.embeddings_index:
                 if not self._load_model_if_exists():
                     raise RuntimeError("Model belum tersedia. Lakukan enroll terlebih dulu.")
@@ -737,6 +744,8 @@ class FaceAttendanceEngine:
                 self._process_enroll(frame)
             elif mode_now == "attendance":
                 self._process_attendance(frame)
+            elif mode_now == "training":
+                self._draw_training_overlay(frame)
             else:
                 self._draw_idle_overlay(frame)
 
@@ -756,6 +765,26 @@ class FaceAttendanceEngine:
         cv2.putText(
             frame,
             "Use web controls to start enroll/attendance",
+            (10, 52),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (220, 220, 220),
+            2,
+        )
+
+    def _draw_training_overlay(self, frame):
+        cv2.putText(
+            frame,
+            "Mode: TRAINING MODEL",
+            (10, 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 180, 255),
+            2,
+        )
+        cv2.putText(
+            frame,
+            "Please wait, rebuilding embeddings...",
             (10, 52),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -854,18 +883,29 @@ class FaceAttendanceEngine:
             )
 
         if job["captured"] >= job["target"]:
-            try:
-                total_people, total_images = train_lbph_model()
-                self._load_model_if_exists()
-                with self.mode_lock:
-                    self.message = (
-                        "Enroll done. "
-                        f"Model updated ({total_people} people, {total_images} images)."
-                    )
-            except Exception as exc:
-                with self.mode_lock:
-                    self.message = f"Training failed: {exc}"
+            with self.mode_lock:
+                if self.mode != "training":
+                    self.mode = "training"
+                    self.message = "Enroll selesai. Rebuild model embedding..."
+            if self.training_thread is None or not self.training_thread.is_alive():
+                self.training_thread = threading.Thread(
+                    target=self._rebuild_model_async, daemon=True
+                )
+                self.training_thread.start()
 
+    def _rebuild_model_async(self):
+        try:
+            total_people, total_images = train_lbph_model()
+            self._load_model_if_exists()
+            with self.mode_lock:
+                self.message = (
+                    "Enroll done. "
+                    f"Model updated ({total_people} people, {total_images} images)."
+                )
+        except Exception as exc:
+            with self.mode_lock:
+                self.message = f"Training failed: {exc}"
+        finally:
             with self.mode_lock:
                 self.mode = "idle"
                 self.enroll_job = None
