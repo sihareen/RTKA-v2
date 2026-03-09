@@ -53,6 +53,15 @@ CASCADE_URL = (
 
 RECOGNITION_THRESHOLD = 60.0
 ENROLL_INTERVAL_SEC = 0.15
+ENROLL_ANGLE_DELAY_SEC = 3.0
+DEFAULT_ENROLL_SAMPLES = 50
+ENROLL_ANGLES = [
+    ("front", "Depan"),
+    ("left", "Miring Kiri"),
+    ("right", "Miring Kanan"),
+    ("up", "Tengadah"),
+    ("down", "Menunduk"),
+]
 DEFAULT_ADMIN_PIN = "123456"
 DEFAULT_ATTENDANCE_CONFIG = {
     "arrival_start": "06:00",
@@ -65,6 +74,11 @@ DEFAULT_ATTENDANCE_CONFIG = {
 # ---------------------------------------------------------------------------
 # Storage and ML utilities
 # ---------------------------------------------------------------------------
+
+def normalize_enroll_target(samples_target):
+    _ = samples_target  # Kompatibilitas request lama.
+    return DEFAULT_ENROLL_SAMPLES
+
 
 def ensure_directories():
     for path in [DATA_DIR, DATASET_DIR, MODELS_DIR, EXPORT_DIR]:
@@ -619,6 +633,8 @@ class FaceAttendanceEngine:
         if not verify_admin_pin(admin_pin):
             raise ValueError("PIN admin salah")
 
+        total_target = normalize_enroll_target(samples_target)
+        samples_per_angle = total_target // len(ENROLL_ANGLES)
         person_data = add_or_update_person(person_code, person_name)
         person_dir = os.path.join(DATASET_DIR, person_code)
         os.makedirs(person_dir, exist_ok=True)
@@ -633,9 +649,13 @@ class FaceAttendanceEngine:
         with self.mode_lock:
             self.enroll_job = {
                 "person": person_data,
-                "target": max(5, int(samples_target)),
+                "target": total_target,
                 "captured": 0,
                 "existing": existing,
+                "per_angle": samples_per_angle,
+                "angle_index": 0,
+                "angle_captured": 0,
+                "angle_started_ts": time.time(),
                 "last_capture_ts": 0.0,
             }
             self.mode = "enroll"
@@ -679,11 +699,17 @@ class FaceAttendanceEngine:
             }
 
             if self.enroll_job is not None:
+                _, angle_label = ENROLL_ANGLES[self.enroll_job["angle_index"]]
                 status["enroll"] = {
                     "person_code": self.enroll_job["person"]["person_code"],
                     "person_name": self.enroll_job["person"]["person_name"],
                     "captured": self.enroll_job["captured"],
                     "target": self.enroll_job["target"],
+                    "angle_label": angle_label,
+                    "angle_index": self.enroll_job["angle_index"] + 1,
+                    "angle_total": len(ENROLL_ANGLES),
+                    "angle_captured": self.enroll_job["angle_captured"],
+                    "per_angle": self.enroll_job["per_angle"],
                 }
 
             return status
@@ -758,22 +784,43 @@ class FaceAttendanceEngine:
             self.set_idle()
             return
 
+        now_ts = time.time()
+        _, angle_label = ENROLL_ANGLES[job["angle_index"]]
+        wait_remaining = max(0.0, ENROLL_ANGLE_DELAY_SEC - (now_ts - job["angle_started_ts"]))
+
         if len(faces) > 0:
             x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
             cv2.rectangle(frame, (x, y), (x + w, y + h), (20, 220, 20), 2)
             face_roi = gray[y : y + h, x : x + w]
 
-            now_ts = time.time()
-            if now_ts - job["last_capture_ts"] >= ENROLL_INTERVAL_SEC:
+            if wait_remaining <= 0 and now_ts - job["last_capture_ts"] >= ENROLL_INTERVAL_SEC:
                 sample_index = job["existing"] + job["captured"] + 1
                 save_face_sample(job["person"]["person_code"], face_roi, sample_index)
 
                 with self.mode_lock:
                     if self.enroll_job is not None:
                         self.enroll_job["captured"] += 1
+                        self.enroll_job["angle_captured"] += 1
                         self.enroll_job["last_capture_ts"] = now_ts
+                        if (
+                            self.enroll_job["angle_captured"] >= self.enroll_job["per_angle"]
+                            and self.enroll_job["captured"] < self.enroll_job["target"]
+                        ):
+                            self.enroll_job["angle_index"] += 1
+                            self.enroll_job["angle_captured"] = 0
+                            self.enroll_job["angle_started_ts"] = now_ts
+                            self.enroll_job["last_capture_ts"] = 0.0
+                            _, next_angle = ENROLL_ANGLES[self.enroll_job["angle_index"]]
+                            self.message = (
+                                f"Ganti sudut ke {next_angle}. "
+                                f"Capture dimulai {ENROLL_ANGLE_DELAY_SEC:.0f} detik lagi."
+                            )
                         job = self.enroll_job
 
+        _, angle_label = ENROLL_ANGLES[job["angle_index"]]
+        wait_remaining = max(
+            0.0, ENROLL_ANGLE_DELAY_SEC - (time.time() - job["angle_started_ts"])
+        )
         progress_text = (
             f"ENROLL {job['person']['person_code']} | "
             f"{job['captured']}/{job['target']}"
@@ -787,6 +834,25 @@ class FaceAttendanceEngine:
             (20, 220, 20),
             2,
         )
+        cv2.putText(
+            frame,
+            f"Sudut: {job['angle_index'] + 1}/{len(ENROLL_ANGLES)} - {angle_label}",
+            (10, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 220, 40),
+            2,
+        )
+        if wait_remaining > 0:
+            cv2.putText(
+                frame,
+                f"Capture starts in: {wait_remaining:.1f}s",
+                (10, 74),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 180, 255),
+                2,
+            )
 
         if job["captured"] >= job["target"]:
             try:
@@ -1307,9 +1373,9 @@ HTML_TEMPLATE = """
         <div class="block">
           <h3 class="section-title">Enroll (Admin)</h3>
           <div class="pin-note">Save Enroll akan meminta PIN admin.</div>
+          <div class="muted">Fixed 50 foto: 5 sudut (Depan, Kiri, Kanan, Tengadah, Menunduk), delay 3 detik per sudut.</div>
           <input id="code" placeholder="Person Code (EMP001)">
           <input id="name" placeholder="Person Name">
-          <input id="samples" type="number" min="5" value="30" placeholder="Samples">
           <button class="btn-accent" onclick="startEnroll()">Save Enroll</button>
         </div>
 
@@ -1384,7 +1450,7 @@ HTML_TEMPLATE = """
       const payload = {
         person_code: document.getElementById('code').value,
         person_name: document.getElementById('name').value,
-        samples: Number(document.getElementById('samples').value || 30),
+        samples: 50,
         admin_pin: pin
       };
       const res = await apiPost('/api/start_enroll', payload);
@@ -1446,7 +1512,9 @@ HTML_TEMPLATE = """
         const e = s.enroll;
         let enrollTxt = '-';
         if (e) {
-          enrollTxt = `${e.person_code} ${e.person_name} (${e.captured}/${e.target})`;
+          enrollTxt =
+            `${e.person_code} ${e.person_name} (${e.captured}/${e.target}) | ` +
+            `Sudut ${e.angle_index}/${e.angle_total} ${e.angle_label} (${e.angle_captured}/${e.per_angle})`;
         }
         const c = s.attendance_config || {};
         document.getElementById('statusBox').innerHTML =
@@ -1536,11 +1604,11 @@ def make_app(engine):
         payload = request.get_json(silent=True) or {}
         person_code = (payload.get("person_code") or "").strip()
         person_name = (payload.get("person_name") or "").strip()
-        samples = int(payload.get("samples") or 30)
+        samples = payload.get("samples") or DEFAULT_ENROLL_SAMPLES
         admin_pin = payload.get("admin_pin")
 
         try:
-            engine.start_enroll(person_code, person_name, samples, admin_pin)
+            engine.start_enroll(person_code, person_name, int(samples), admin_pin)
             return jsonify({"ok": True, "message": "Enroll started"})
         except Exception as exc:
             return jsonify({"ok": False, "message": str(exc)}), 400
