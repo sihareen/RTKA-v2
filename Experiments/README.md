@@ -19,11 +19,17 @@ Folder **Experiments** berisi **tutorial lengkap** untuk RTKA Trainer Kit v2 dal
 
 ```
 Experiments/
+├── 01_GPIO/                # Level 1: Bab 1 - Dasar GPIO
+├── 02_Output/              # Level 1: Bab 2 - Output Dasar
+├── 03_Input/               # Level 1: Bab 3 - Input Dasar
+├── 04_Buzzer/              # Level 1: Bab 4 - Buzzer & Audio Indicator
+├── 05_Sensor/              # Level 1: Bab 5 - Sensor Dasar
+├── 06_Mini_Project_Beginner/ # Level 1: Bab 6 - Mini Project
 ├── L2-Intermediate/        # Level 2: IoT & Networking (Bab 7-12)
 └── L3-Advanced/            # Level 3: AI & Computer Vision (Bab 14-20)
 ```
 
-> **Note**: Level 1 (Basic) akan ditambahkan di masa mendatang untuk mencakup dasar-dasar GPIO, LED, sensor, dan motor control.
+> Level 1 (Beginner) sudah tersedia untuk mencakup dasar GPIO, LED, input, buzzer, dan sensor.
 
 ---
 
@@ -219,9 +225,9 @@ Program akan **auto-download models** saat pertama kali dijalankan.
 ┌─────────────────────────────────────────────────────────┐
 │  START HERE                                              │
 │  ↓                                                       │
-│  Level 1 (Basic) - Coming Soon                          │
-│  └─ GPIO, LED, Sensors, Basic Motor Control             │
-│     Estimated: 20-25 programs                           │
+│  Level 1 (Basic)                                         │
+│  └─ GPIO, LED, Input, Buzzer, Ultrasonic, Mini Project  │
+│     25+ programs                                         │
 │                                                          │
 │  Level 2 (Intermediate) ← YOU ARE HERE                  │
 │  └─ IoT, Networking, Web Control                        │

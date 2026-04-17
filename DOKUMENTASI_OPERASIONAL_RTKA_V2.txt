@@ -1,0 +1,348 @@
+DOKUMENTASI OPERASIONAL RTKA-v2
+Versi dokumen: 2026-04-17
+Lokasi project: /home/hreen/Documents/Magang/RTKA-v2 (dev) / umumnya /home/pi/RTKAv2 (di Raspberry Pi)
+
+====================================================================
+0) TUJUAN DOKUMEN
+====================================================================
+Dokumen ini merangkum cara:
+1. Remote/akses robot
+2. Konek ke sensor + pengujian
+3. Tes koneksi ke server
+4. Daftar script yang dipakai dan fungsi masing-masing
+5. Tes end-to-end untuk memastikan seluruh fungsi OK
+
+Tambahan improve:
+- Checklist commissioning
+- Troubleshooting cepat
+- Urutan eksekusi paling aman saat pertama kali nyalakan robot
+
+
+====================================================================
+1) CARA REMOTE / AKSES
+====================================================================
+
+A. Akses ke Raspberry Pi via SSH
+1) Cari IP Raspberry Pi:
+   - Dari Pi: hostname -I
+   - Dari router/AP: cek daftar DHCP client
+2) SSH dari laptop:
+   ssh pi@<IP_RASPBERRY_PI>
+3) Masuk folder project:
+   cd /home/pi/RTKAv2
+
+B. Akses via AP/captive portal (NetPortal)
+NetPortal ada di folder: NetPortal/wifi_manager.py
+Fungsi: jika robot belum online, aktifkan AP + portal konfigurasi Wi-Fi.
+
+Langkah:
+1) Jalankan NetPortal:
+   cd /home/pi/RTKAv2/NetPortal
+   sudo python3 wifi_manager.py
+2) Connect HP/laptop ke AP robot.
+3) Buka browser ke portal (umumnya auto-redirect). Jika tidak:
+   http://192.168.1.101
+4) Pilih:
+   - Connect ke profile Wi-Fi tersimpan
+   - Connect manual SSID/password
+
+Catatan penting:
+- Password AP default di kode bisa berbeda tergantung environment variable (RTKA_AP_PASSWORD).
+- Cek status portal via:
+  curl http://<IP_PORTAL>/api/status
+
+C. Akses API robot (main server)
+Main API berjalan di port 8000 (main.py).
+Endpoint dasar:
+- GET http://<IP_ROBOT>:8000/
+- GET http://<IP_ROBOT>:8000/video_feed
+
+D. Akses service manager (opsional)
+Manager berjalan di port 5000 (manager.py) untuk start/stop/reboot main app.
+
+Start manager:
+cd /home/pi/RTKAv2
+source venv/bin/activate
+python manager.py
+
+
+====================================================================
+2) CARA KONEK KE SENSOR DAN PENGUJIANNYA
+====================================================================
+
+A. Mapping sensor utama (mengacu config.py dan modules/sensors.py)
+- Ultrasonic HC-SR04:
+  Trigger: GPIO 24
+  Echo:    GPIO 25
+- Line sensor 5 channel (BFD):
+  LL=10, L=9, M=11, R=5, RR=6
+- Emergency sensor:
+  Near=7, Clap=16
+
+B. Verifikasi wiring sebelum test
+1) Pastikan GND semua perangkat common ground.
+2) Pastikan power motor driver terpisah/stabil.
+3) Pastikan pin sesuai config.py yang aktif saat ini.
+
+C. Test sensor satu per satu
+
+1) Test Ultrasonic cepat
+Script: test/hcsr.py
+Command:
+  cd /home/pi/RTKAv2
+  source venv/bin/activate
+  python test/hcsr.py
+Expected:
+- Muncul nilai "Jarak: xx.xx cm" setiap 1 detik.
+- Jika selalu error/0/tidak berubah: cek wiring trig/echo + level logic.
+
+2) Test line/emergency via sistem utama
+Cara paling praktis: jalankan mode avoid/hybrid di websocket /ws/avoid lalu lihat respon robot.
+Opsional advanced:
+- Tambahkan print di modules/sensors.py untuk get_line_status() saat debug.
+
+3) Test pin kritis motor/sensor (diagnostik)
+Script:
+- test/quick_pin_test.py (fokus GPIO 6 dan 24)
+- test/pin_diagnostic.py (cek konflik + test motor individual)
+- test/motor_wiring_test.py (wizard test interaktif)
+
+Command umum:
+  cd /home/pi/RTKAv2
+  source venv/bin/activate
+  python test/quick_pin_test.py
+  python test/pin_diagnostic.py
+  python test/motor_wiring_test.py
+
+D. Test servo
+Script: test/servo.py
+Command:
+  cd /home/pi/RTKAv2
+  source venv/bin/activate
+  python test/servo.py
+Expected:
+- Servo sweep sesuai pulse.
+- File log servo_lgpio_log.csv terbentuk.
+
+
+====================================================================
+3) CARA TES KONEKSI KE SERVER
+====================================================================
+
+A. Jalankan server utama
+cd /home/pi/RTKAv2
+source venv/bin/activate
+python main.py
+
+B. Health check HTTP
+1) Root status:
+   curl http://127.0.0.1:8000/
+   Expected: JSON status server
+2) Video stream endpoint:
+   curl -I http://127.0.0.1:8000/video_feed
+   Expected: HTTP 200 + content-type multipart/x-mixed-replace
+
+C. Tes dari device lain (LAN)
+1) Cek reachability:
+   ping <IP_ROBOT>
+2) Cek API:
+   curl http://<IP_ROBOT>:8000/
+3) Cek stream di browser:
+   http://<IP_ROBOT>:8000/video_feed
+
+D. Tes manager (opsional, port 5000)
+1) Start manager:
+   python manager.py
+2) Start robot via manager:
+   curl -X POST http://127.0.0.1:5000/ \
+     -H "Content-Type: application/json" \
+     -d '{"cmd":"command","mode":"start"}'
+3) Stop robot via manager:
+   curl -X POST http://127.0.0.1:5000/ \
+     -H "Content-Type: application/json" \
+     -d '{"cmd":"command","mode":"stop"}'
+
+E. Tes websocket endpoint (konsep)
+Endpoint aktif di main.py:
+- /ws/configSwitch
+- /ws/control
+- /ws/autoPilot
+- /ws/tracking
+- /ws/recognitionControl
+- /ws/objectDetection
+- /ws/qr
+- /ws/avoid
+
+Bisa diuji pakai client websocket (mis. websocat/postman) dengan payload JSON sesuai mode.
+
+
+====================================================================
+4) SCRIPT YANG DIGUNAKAN DAN FUNGSI MASING-MASING
+====================================================================
+
+A. Script utama
+1) main.py
+- Server FastAPI utama robot (port 8000)
+- Menyediakan endpoint HTTP + WebSocket
+- Inisialisasi motor, kamera+AI, extras, sensors
+- Menjalankan mode kontrol: manual, avoid, tracking, recognition, object detect, QR, autopilot
+
+2) manager.py
+- Service manager port 5000
+- API start/stop/reset untuk main.py
+- Cocok untuk integrasi orchestrator eksternal
+
+3) NetPortal/wifi_manager.py
+- Manajemen Wi-Fi + AP captive portal
+- Auto-connect known Wi-Fi, scan, fallback ke AP
+- Menyediakan status API portal (/api/status)
+
+B. Modul inti (folder modules/)
+1) modules/motor.py
+- Driver motor 4WD
+- Mixing throttle+steering
+- Mapping PWM minimum agar motor tidak dead zone
+
+2) modules/camera.py
+- Capture video (V4L2)
+- Frame resize + frame skip
+- Integrasi AI processor
+- Generator MJPEG untuk /video_feed
+
+3) modules/ai.py
+- AI mode processor:
+  object_detection, face_detection, gesture_recognition, color_detection, qr_recognition, auto_pilot
+- Hitung tracking error X/Y untuk kontrol servo/motor
+
+4) modules/sensors.py
+- Baca ultrasonic, line sensor, emergency sensor
+- Fungsi utama: get_distance(), get_line_status(), check_panic()
+
+5) modules/extras.py
+- Servo (hardware PWM), buzzer, LED
+- Melody player + detach servo
+
+6) modules/config_loader.py
+- Load/simpan user_config.json
+- Pilih mode default vs user-config pin
+
+C. Script instalasi & utilitas
+1) install_rtka_rpi.sh
+- Install dependency OS + Python
+- Setup venv
+- Setup service systemd
+
+2) ap.sh / wifi.sh
+- Shortcut command koneksi AP/Wi-Fi tertentu via nmcli
+
+D. Script test (folder test/)
+- quick_pin_test.py: test cepat pin kritis
+- pin_diagnostic.py: cek konflik pin + test motor per channel
+- motor_wiring_test.py: diagnosa wiring motor berbasis prompt
+- hcsr.py: test ultrasonic
+- servo.py / pigpiO.py: test servo PWM
+- gpio_high_diagnostic.py / gpio_pull_analysis.py: analisa kondisi GPIO abnormal
+
+
+====================================================================
+5) CARA TES JIKA SEMUA FUNGSI SUDAH OK (END-TO-END)
+====================================================================
+
+A. Pre-flight checklist
+[ ] Power Raspberry Pi stabil
+[ ] Power motor driver stabil
+[ ] Kamera terdeteksi
+[ ] Wiring pin sesuai config aktif
+[ ] venv aktif dan dependency terpasang
+
+B. Urutan tes yang direkomendasikan
+1) Tes pin/wiring dulu:
+   python test/quick_pin_test.py
+   python test/pin_diagnostic.py
+2) Tes sensor ultrasonic:
+   python test/hcsr.py
+3) Tes servo:
+   python test/servo.py
+4) Jalankan main server:
+   python main.py
+5) Tes HTTP:
+   curl http://127.0.0.1:8000/
+   curl -I http://127.0.0.1:8000/video_feed
+6) Tes mode websocket satu per satu:
+   - Manual: /ws/control -> move/stop/servo
+   - Avoid: /ws/avoid -> start mode avoid_hcsr/avoid_hybrid
+   - Tracking: /ws/tracking -> face_track / color_track
+   - Recognition: /ws/recognitionControl -> gesture_cmd / color_follow
+   - Detection: /ws/objectDetection
+   - QR: /ws/qr
+   - AutoPilot: /ws/autoPilot
+7) Tes failover Wi-Fi:
+   - Jalankan NetPortal
+   - Putuskan Wi-Fi client
+   - Verifikasi AP portal aktif kembali
+
+C. Kriteria lulus (PASS)
+- Server 8000 merespon normal
+- Video stream tampil
+- Motor merespon perintah tanpa ghost movement
+- Sensor jarak berubah sesuai objek
+- Servo bergerak sesuai command dan tidak jitter parah
+- Minimal 1 mode AI berjalan sesuai ekspektasi
+- Saat koneksi Wi-Fi putus, portal bisa recovery
+
+D. Burn-in singkat (opsional tapi disarankan)
+- Jalankan mode manual + avoid total 10-15 menit
+- Pantau suhu, drop frame, disconnect, reset tak terduga
+
+
+====================================================================
+6) TROUBLESHOOTING CEPAT
+====================================================================
+
+1) Port 8000 tidak bisa diakses
+- Cek proses:
+  ps aux | grep main.py
+- Cek bind port:
+  ss -tulpen | grep 8000
+- Cek log crash:
+  tail -f /home/pi/RTKAv2/crash_log.txt
+
+2) Video tidak tampil
+- Cek kamera:
+  v4l2-ctl --list-devices
+- Cek VIDEO_SOURCE dan resolusi di config yang dipakai.
+
+3) Motor jalan sendiri
+- Jalankan:
+  python test/gpio_high_diagnostic.py
+  python test/motor_wiring_test.py
+- Cek short di driver/kabel + pastikan pin tidak konflik.
+
+4) WebSocket sering putus
+- Cek kualitas Wi-Fi
+- Cek beban CPU saat mode AI aktif
+- Kurangi resolusi/frame rate (camera config)
+
+5) NetPortal tidak muncul
+- Pastikan NetworkManager aktif:
+  sudo systemctl status NetworkManager
+- Jalankan manual untuk lihat log:
+  cd /home/pi/RTKAv2/NetPortal
+  sudo python3 wifi_manager.py
+
+
+====================================================================
+7) CATATAN IMPLEMENTASI PENTING
+====================================================================
+
+1) Sebagian dokumentasi lama bisa berbeda dengan endpoint aktual.
+   Gunakan endpoint yang benar-benar ada di main.py.
+
+2) Jika project dipindah path (bukan /home/pi/RTKAv2),
+   sesuaikan path hardcoded pada script test tertentu.
+
+3) Jika memakai user_config.json untuk remap pin,
+   lakukan reload hardware (via /ws/configSwitch set_mode) atau restart service.
+
+
+-- Selesai --
